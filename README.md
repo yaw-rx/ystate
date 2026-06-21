@@ -32,10 +32,10 @@ const BasketGraph = defineMachine({
     payment: PaymentGraph,
   },
   edges: (refs) => ({
-    addFromEmpty:    { from: 'empty',      to: 'addingItem', on: 'addItem',   handler: 'next' },
-    addFromHasItems: { from: 'hasItems',   to: 'addingItem', on: 'addItem',   handler: 'next' },
-    added:           { from: 'addingItem', to: 'hasItems',   on: 'itemAdded', handler: 'next' },
-    checkout:        { from: 'hasItems',   to: refs.payment.nodes.processing, on: 'checkout', handler: 'next' },
+    addFromEmpty:    { from: 'empty',      to: 'addingItem', on: 'addItem.next' },
+    addFromHasItems: { from: 'hasItems',   to: 'addingItem', on: 'addItem.next' },
+    added:           { from: 'addingItem', to: 'hasItems',   on: 'itemAdded.next' },
+    checkout:        { from: 'hasItems',   to: refs.payment.nodes.processing, on: 'checkout.next' },
   }),
 }).implement(on => ({
   addItem: on.addItem({
@@ -129,15 +129,15 @@ Transitions themselves contain **no side effects**. Side effects happen when *yo
 
 ### Edges
 
-An edge connects a source node to a target node and says **which transition** powers the move (via `on`) and **which branch** (`'next'` or `'error'`).  
+An edge connects a source node to a target node via `on`, which names the transition and branch in a single field (e.g. `'process.next'` or `'process.error'`).  
 The type system uses the edge's `from`/`to` and the referenced transition to verify that the handler returns exactly the correct shape.
 
 Edges are defined as a function that receives typed context refs, so cross-machine node references are checked at compile time.
 
 ```typescript
 edges: (refs) => ({
-  approve: { from: 'processing', to: 'approved',  on: 'process', handler: 'next' },
-  decline: { from: 'processing', to: 'declined',  on: 'process', handler: 'error' },
+  approve: { from: 'processing', to: 'approved',  on: 'process.next' },
+  decline: { from: 'processing', to: 'declined',  on: 'process.error' },
 }),
 ```
 
@@ -153,7 +153,7 @@ const BasketGraph = defineMachine({
     payment: PaymentGraph,
   },
   edges: (refs) => ({
-    checkout: { from: 'hasItems', to: refs.payment.nodes.processing, on: 'checkout', handler: 'next' },
+    checkout: { from: 'hasItems', to: refs.payment.nodes.processing, on: 'checkout.next' },
   }),
 }).implement(on => ({
   checkout: on.checkout({
@@ -179,7 +179,7 @@ npm install @yaw-rx/ystate rxjs
 
 1. Define your **nodes**, each with a typed data shape.
 2. Optionally pass other machines via **context**.
-3. Define your **edges** as a function, `(refs) => ({...})` with `from`, `to`, `on`, and `handler`. This is the graph topology.
+3. Define your **edges** as a function, `(refs) => ({...})` with `from`, `to`, and `on`. This is the graph topology.
 4. Chain `.implement(on => ({...}))` to implement each transition. `on` provides full contextual typing derived from the graph.
 
 *A thin runtime API is on the way; the type system already guarantees correctness.*

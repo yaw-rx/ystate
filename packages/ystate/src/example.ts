@@ -7,8 +7,8 @@ const AuthGraph = defineMachine({
     authenticated: { token: '', authenticatedAt: 0 },
   },
   edges: () => ({
-    login:  { from: 'loggedOut',     to: 'authenticated', on: 'authenticate',  handler: 'next' },
-    expire: { from: 'authenticated', to: 'loggedOut',     on: 'sessionExpire', handler: 'next' },
+    login:  { from: 'loggedOut',     to: 'authenticated', on: 'authenticate.next' },
+    expire: { from: 'authenticated', to: 'loggedOut',     on: 'sessionExpire.next' },
   }),
 }).implement(on => ({
   authenticate: on.authenticate({
@@ -30,8 +30,8 @@ const PaymentGraph = defineMachine({
     declined: { reason: '' },
   },
   edges: () => ({
-    approve: { from: 'processing', to: 'approved', on: 'process', handler: 'next' },
-    decline: { from: 'processing', to: 'declined', on: 'process', handler: 'error' },
+    approve: { from: 'processing', to: 'approved', on: 'process.next' },
+    decline: { from: 'processing', to: 'declined', on: 'process.error' },
   }),
 }).implement(on => ({
   process: on.process({
@@ -52,10 +52,10 @@ const BasketGraph = defineMachine({
     payment: PaymentGraph,
   },
   edges: (refs) => ({
-    addFromEmpty:    { from: 'empty',      to: 'addingItem', on: 'addItem',   handler: 'next' },
-    addFromHasItems: { from: 'hasItems',   to: 'addingItem', on: 'addItem',   handler: 'next' },
-    added:           { from: 'addingItem', to: 'hasItems',   on: 'itemAdded', handler: 'next' },
-    checkout:        { from: 'hasItems',   to: refs.payment.nodes.processing, on: 'checkout', handler: 'next' },
+    addFromEmpty:    { from: 'empty',      to: 'addingItem', on: 'addItem.next' },
+    addFromHasItems: { from: 'hasItems',   to: 'addingItem', on: 'addItem.next' },
+    added:           { from: 'addingItem', to: 'hasItems',   on: 'itemAdded.next' },
+    checkout:        { from: 'hasItems',   to: refs.payment.nodes.processing, on: 'checkout.next' },
   }),
 }).implement(on => ({
   addItem: on.addItem({
@@ -90,7 +90,7 @@ const BasketGraph = defineMachine({
 
 // --- Violations ---
 
-const BasketBroken = defineMachine({
+/*const BasketBroken = defineMachine({
   nodes: {
     empty:    {},
     hasItems: { items: [] as string[] },
@@ -99,11 +99,11 @@ const BasketBroken = defineMachine({
     payment: PaymentGraph,
   },
   edges: (refs) => ({
-    add: { from: 'empty', to: 'hasItems', on: 'addItem', handler: 'next' },
+    add: { from: 'empty', to: 'hasItems', on: 'addItem.next' },
     // VIOLATION: 'browsing' is not a node
-    bad: { from: 'browsing', to: 'empty', using: 'addItem', handler: 'next' },
+    bad: { from: 'browsing', to: 'empty', on: 'addItem.next' },
     // VIOLATION: 'refunded' does not exist in PaymentGraph
-    checkout: { from: 'hasItems', to: refs.payment.nodes.refunded, on: 'addItem', handler: 'next' },
+    checkout: { from: 'hasItems', to: refs.payment.nodes.refunded, on: 'addItem.next' },
   }),
 }).implement(on => ({
   addItem: on.addItem({
@@ -111,4 +111,4 @@ const BasketBroken = defineMachine({
     next: (result) => ({}),
     error: (result) => ({}),
   }),
-}))
+}))*/

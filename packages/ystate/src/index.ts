@@ -1,4 +1,4 @@
-import { Observable } from 'rxjs';
+import { Observable, type Subscription } from 'rxjs';
 
 /**
  * Core library for defining pure finite state machines with typed nodes,
@@ -94,7 +94,7 @@ export type SourceNodeData<TNodeMap extends Record<string, NodeData>, TFrom> =
  * @template TEdges - The edges record.
  */
 export type TransitionNames<TEdges> = {
-  [K in keyof TEdges]: TEdges[K] extends { on: infer U extends string } ? U : never
+  [K in keyof TEdges]: TEdges[K] extends { on: `${infer U}.${string}` } ? U : never
 }[keyof TEdges]
 
 /**
@@ -105,7 +105,7 @@ export type TransitionNames<TEdges> = {
  * @template THandler - The handler direction (`'next'` or `'error'`).
  */
 export type CollectTargets<TEdges, TOn extends string, THandler extends string> = {
-  [K in keyof TEdges]: TEdges[K] extends { on: TOn; handler: THandler; to: infer To } ? To : never
+  [K in keyof TEdges]: TEdges[K] extends { on: `${TOn}.${THandler}`; to: infer To } ? To : never
 }[keyof TEdges]
 
 /**
@@ -116,7 +116,7 @@ export type CollectTargets<TEdges, TOn extends string, THandler extends string> 
  * @template THandler - The handler direction (`'next'` or `'error'`).
  */
 export type CollectSources<TEdges, TOn extends string, THandler extends string> = {
-  [K in keyof TEdges]: TEdges[K] extends { on: TOn; handler: THandler; from: infer From } ? From : never
+  [K in keyof TEdges]: TEdges[K] extends { on: `${TOn}.${THandler}`; from: infer From } ? From : never
 }[keyof TEdges]
 
 /**
@@ -222,8 +222,7 @@ export function defineMachine<
   const TEdges extends Record<string, {
     from: Extract<keyof TNodes, string>
     to: Extract<keyof TNodes, string> | ContextNodeRef
-    on: string
-    handler: 'next' | 'error'
+    on: `${string}.${'next' | 'error'}`
   }>,
 >(def: {
   nodes: TNodes
@@ -249,7 +248,7 @@ export function defineMachine<
       edges: { [K in keyof TEdges]: {
         from: TEdges[K] extends { from: infer F } ? F : never
         to: TEdges[K] extends { to: infer T } ? T : never
-        on: TEdges[K] extends { on: infer U extends string; handler: infer H extends string }
+        on: TEdges[K] extends { on: `${infer U}.${infer H}` }
           ? GetHandler<TTransitions[U & keyof TTransitions], H>
           : never
       } }
@@ -263,8 +262,9 @@ export function defineMachine<
       const edges: any = {}
       for (const key of Object.keys(edgeDefs)) {
         const e = edgeDefs[key]
-        const t = (transitions as any)[e.on]
-        edges[key] = { from: e.from, to: e.to, on: e.handler === 'next' ? t.next : t.error }
+        const [name, handler] = e.on.split('.')
+        const t = (transitions as any)[name]
+        edges[key] = { from: e.from, to: e.to, on: handler === 'next' ? t.next : t.error }
       }
 
       return { nodes: def.nodes, transitions, edges, state$: new Observable() as any }
