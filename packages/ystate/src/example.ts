@@ -1,7 +1,7 @@
 import { Observable, timer, filter, withLatestFrom } from 'rxjs';
-import { defineMachine } from "./index.js"
+import { defineIncidenceGraph } from "./index.js"
 
-const AuthGraph = defineMachine({
+const Auth = defineIncidenceGraph({
   nodes: {
     loggedOut: { since: 0 },
     authenticated: { token: '', authenticatedAt: 0 },
@@ -23,7 +23,7 @@ const AuthGraph = defineMachine({
   }),
 }))
 
-const PaymentGraph = defineMachine({
+const Payment = defineIncidenceGraph({
   nodes: {
     processing: { orderId: '' },
     approved: { confirmedAt: 0 },
@@ -41,15 +41,15 @@ const PaymentGraph = defineMachine({
   }),
 }))
 
-const BasketGraph = defineMachine({
+const Basket = defineIncidenceGraph({
   nodes: {
     empty:      {},
     addingItem: { itemId: '' },
     hasItems:   { items: [] as string[] },
   },
-  context: {
-    auth: AuthGraph,
-    payment: PaymentGraph,
+  incidenceMachines: {
+    auth: Auth,
+    payment: Payment,
   },
   edges: (refs) => ({
     addFromEmpty:    { from: 'empty',      to: 'addingItem', on: 'addItem.next' },
@@ -73,7 +73,7 @@ const BasketGraph = defineMachine({
   }),
   checkout: on.checkout({
     $: (ctx) => timer(500).pipe(
-      withLatestFrom(ctx.auth.state$),
+      withLatestFrom(ctx.auth.node$),
       filter(([_, auth]) => {
          if(auth.node === 'authenticated') {
             auth.data
@@ -88,21 +88,72 @@ const BasketGraph = defineMachine({
   }),
 }))
 
+// --- Runtime ---
+
+// .close() validates Auth's graph satisfies E ⊆ V × V -
+// every edge's from and to exist in the node set. Throws if not.
+const authMachineSet = Auth.close()
+
+// .start() runs the machine from the given entry node and returns
+// a RunningMachineSet. node$ emits { node, data } on each transition,
+// edge$ emits { edge, from, to } on each edge firing.
+const auth = authMachineSet.start('loggedOut')
+
+// node$ emits { node, data } whenever the machine transitions.
+auth.node$.subscribe(state => console.log(`[${state.node}]`, state.data))
+
+// edge$ emits { edge, from, to } on each edge firing.
+auth.edge$.subscribe(event =>
+  console.log(`${event.edge}: ${event.from} -> ${event.to}`)
+)
+
+// Basket:
+//   - absorbs Payment (checkout edge targets payment.processing)
+//   - observes Auth (disconnected - no edges target its nodes)
+//
+// .close():
+//   - merges Basket and Payment into one graph (the "root graph")
+//   - validates Auth independently
+//
+// .start(entry, runningMachines, initialNodeData):
+//   - entry: the starting node in the root graph
+//   - runningMachines: running instances of disconnected machines,
+//     passed to transition $ factories for observation
+//   - initialNodeData: optional partial state for any node in the root graph
+const basket = Basket.close().start('empty', { auth }, { items: ['item-0'] })
+
+// node$ fires for all nodes in the root graph (basket + payment).
+// Completes when a terminal node is reached (no outgoing edges) -
+// here that's payment.approved or payment.declined.
+basket.node$.subscribe({
+  next: (state) => console.log(`[${state.node}]`, state.data),
+  complete: () => console.log('basket complete'),
+})
+
+// edge$ fires for all edges in the merged graph.
+basket.edge$.subscribe(event => console.log(`${event.edge}: ${event.from} -> ${event.to}`))
+
+// Each absorbed machine also has its own RunningMachine, filtered
+// from the root streams by namespace.
+basket.runningMachines['payment'].node$.subscribe(state =>
+  console.log(`[payment:${state.node}]`, state.data)
+)
+
 // --- Violations ---
 
-/*const BasketBroken = defineMachine({
+const BasketBroken = defineIncidenceGraph({
   nodes: {
     empty:    {},
     hasItems: { items: [] as string[] },
   },
-  context: {
-    payment: PaymentGraph,
+  incidenceMachines: {
+    payment: Payment,
   },
   edges: (refs) => ({
     add: { from: 'empty', to: 'hasItems', on: 'addItem.next' },
     // VIOLATION: 'browsing' is not a node
     bad: { from: 'browsing', to: 'empty', on: 'addItem.next' },
-    // VIOLATION: 'refunded' does not exist in PaymentGraph
+    // VIOLATION: 'refunded' does not exist in Payment
     checkout: { from: 'hasItems', to: refs.payment.nodes.refunded, on: 'addItem.next' },
   }),
 }).implement(on => ({
@@ -111,4 +162,4 @@ const BasketGraph = defineMachine({
     next: (result) => ({}),
     error: (result) => ({}),
   }),
-}))*/
+}))

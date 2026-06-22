@@ -21,15 +21,15 @@ Most libraries (notably XState) add an imperative runtime, a mutable "context" b
 Define the graph topology first. Then implement the transitions, with every parameter inferred from the structure.
 
 ```typescript
-const BasketGraph = defineMachine({
+const Basket = defineIncidenceGraph({
   nodes: {
     empty:      {},
     addingItem: { itemId: '' },
     hasItems:   { items: [] as string[] },
   },
-  context: {
-    auth: AuthGraph,
-    payment: PaymentGraph,
+  incidenceMachines: {
+    auth: Auth,
+    payment: Payment,
   },
   edges: (refs) => ({
     addFromEmpty:    { from: 'empty',      to: 'addingItem', on: 'addItem.next' },
@@ -40,24 +40,24 @@ const BasketGraph = defineMachine({
 }).implement(on => ({
   addItem: on.addItem({
     $: () => timer(500),
-    next: (result, destNode, sourceNode) => ({ itemId: String(result) }), // addingItem
-    error: (error, destNode, sourceNode) => ({}), // empty | hasItems
+    next: (result, dest, source) => ({ itemId: String(result) }),
+    error: (result) => ({}),
   }),
   itemAdded: on.itemAdded({
     $: () => timer(1000),
-    next: (result, destNode) => { // hasItems
-      const existing = destNode?.items ?? []
+    next: (result, dest) => {
+      const existing = dest?.items ?? []
       return { items: [...existing, `item-${existing.length + 1}`] }
     },
-    error: (error, destNode, sourceNode) => ({ itemId: '' }), // addingItem
+    error: (result) => ({ itemId: '' }),
   }),
   checkout: on.checkout({
     $: (ctx) => timer(500).pipe(
-      withLatestFrom(ctx.auth.state$),
+      withLatestFrom(ctx.auth.node$),
       filter(([_, auth]) => auth.node === 'authenticated'),
     ),
-    next: (result, destNode, sourceNode) => ({ orderId: 'ORD-001' }), // PaymentGraph.processing
-    error: (error, destNode, sourceNode) => ({ items: [] as string[] }), // hasItems
+    next: (result) => ({ orderId: 'ORD-001' }),
+    error: (result) => ({ items: [] as string[] }),
   }),
 }))
 ```
@@ -89,6 +89,23 @@ YState is a pure finite state machine: a graph of typed nodes and observable-dri
 
 ## Core concepts
 
+### Pipeline
+
+A finite state machine is formally a 5-tuple (Q, Σ, δ, q₀, F): a set of states Q, an input alphabet Σ, a transition function δ, a start state q₀, and a set of final states F. Most FSM libraries hide this behind imperative runtimes and mutable context bags. YState preserves the formalism and makes each stage of construction explicit:
+
+```
+IncidenceGraph -> IncidenceMachine -> MachineSet -> RunningMachineSet
+   (V, E)         (V, E, δ,          (closed,      (live observable
+                   incidence           validated     streams)
+                   machines)           machines)
+```
+
+- **IncidenceGraph** - the topology: nodes V and an incidence relation E. May be open (edges can reference nodes outside V via cross-machine refs). This is the developer's factorisation unit, not yet an FSM.
+- **IncidenceMachine** - an incidence graph equipped with transition functions δ and optionally other incidence machines whose nodes it references. Produced by `defineIncidenceGraph().implement()`. Still not a valid FSM because the graph may be open.
+- **Machine** - a single closed FSM: Q = nodes, Σ = observable emissions, δ = transition functions, F = nodes with no outgoing edges (derived). The graph satisfies E ⊆ V × V. Produced internally during `.close()`.
+- **MachineSet** - a validated collection of Machines, produced by `.close()`. Contains the root supergraph (root + absorbed machines, merged and namespaced) plus any disconnected machines, each independently closed. Includes provenance metadata mapping namespaced names back to their origins.
+- **RunningMachineSet** - the live runtime, produced by `.start()`. q₀ is the entry node passed to start. Observable streams over the supergraph's state changes and edge firings.
+
 ### Topology first
 
 YState separates the graph structure from the transition logic. You declare the topology first, nodes and edges, establishing which states exist and how they connect. Then you implement the transitions via `.implement(on => ({...}))`, where `on` derives every parameter type from the graph structure. The topology is the contract; the type system enforces it.
@@ -111,7 +128,7 @@ nodes: {
 
 Transitions are defined in a second step via `.implement(on => ({...}))`. `on` provides one factory per transition name extracted from the edges. Each factory contextually types its handlers: `result` from the `$` observable's emission type, `dest` from the target node's data shape, and `source` from the source node's data shape. A transition is an object with:
 
-- `$` - an Observable factory (the input alphabet). The runtime passes the machine's context, so transitions that depend on other machines receive it as a parameter. It can be a timer, a DOM event, an HTTP call, a stream pipeline, anything reactive.
+- `$` - an Observable factory (the input alphabet). When the machine has incidence machines, the runtime passes their running instances so transitions can observe their state. It can be a timer, a DOM event, an HTTP call, a stream pipeline, anything reactive.
 - `next` - a pure function `(result, dest?, source?) -> targetNodeData`. The `result` type is inferred from `$`, and `dest`/`source` types are derived from the edges.
 - `error` - a pure function `(error, dest?, source?) -> targetNodeData` for the failure path.
 
@@ -121,8 +138,8 @@ Transitions themselves contain **no side effects**. Side effects happen when *yo
 .implement(on => ({
   process: on.process({
     $: () => timer(3000),
-    next: (result, destNode, sourceNode) => ({ confirmedAt: Date.now() }),
-    error: (result, destNode, sourceNode) => ({ reason: String(result) }),
+    next: (result, dest, source) => ({ confirmedAt: Date.now() }),
+    error: (result, dest, source) => ({ reason: String(result) }),
   }),
 }))
 ```
@@ -132,7 +149,7 @@ Transitions themselves contain **no side effects**. Side effects happen when *yo
 An edge connects a source node to a target node via `on`, which names the transition and branch in a single field (e.g. `'process.next'` or `'process.error'`).  
 The type system uses the edge's `from`/`to` and the referenced transition to verify that the handler returns exactly the correct shape.
 
-Edges are defined as a function that receives typed context refs, so cross-machine node references are checked at compile time.
+Edges are defined as a function that receives typed refs from the incidence machines, so cross-machine node references are checked at compile time.
 
 ```typescript
 edges: (refs) => ({
@@ -141,16 +158,21 @@ edges: (refs) => ({
 }),
 ```
 
-### Composition (cross-machine references)
+### Composition (incidence machines)
 
-Graphs can reference nodes in other machines directly. Pass other machines via `context`, and the `refs` parameter in the `edges` callback gives you typed access to their nodes.
+Graphs can reference nodes in other machines directly. Pass other incidence machines via `incidenceMachines`, and the `refs` parameter in the `edges` callback gives you typed access to their nodes.
+
+When a machine is closed, its incidence machines are partitioned into two sets:
+
+- **Absorbed** - at least one edge targets a node in this machine. Its graph is merged into the root supergraph, namespaced by key (e.g. `payment.processing`). The absorbed machine's transitions become part of the root machine.
+- **Disconnected** - no edges target its nodes. It runs independently and is observed only. A running instance must be provided at `.start()` time so transition `$` factories can subscribe to its streams.
 
 ```typescript
-const BasketGraph = defineMachine({
+const Basket = defineIncidenceGraph({
   nodes: { ... },
-  context: {
-    auth:    AuthGraph,
-    payment: PaymentGraph,
+  incidenceMachines: {
+    auth:    Auth,       // disconnected: no edges target auth nodes
+    payment: Payment,    // absorbed: checkout edge targets payment.processing
   },
   edges: (refs) => ({
     checkout: { from: 'hasItems', to: refs.payment.nodes.processing, on: 'checkout.next' },
@@ -158,16 +180,16 @@ const BasketGraph = defineMachine({
 }).implement(on => ({
   checkout: on.checkout({
     $: (ctx) => timer(500).pipe(
-      withLatestFrom(ctx.auth.state$),
+      withLatestFrom(ctx.auth.node$),
       filter(([_, auth]) => auth.node === 'authenticated'),
     ),
-    next: (result, destNode, sourceNode) => ({ orderId: 'ORD-001' }), // PaymentGraph.processing
-    error: (error, destNode, sourceNode) => ({ items: [] as string[] }), // hasItems
+    next: (result) => ({ orderId: 'ORD-001' }),
+    error: (result) => ({ items: [] as string[] }),
   }),
 }))
 ```
 
-The compiler checks that `processing` really exists in `PaymentGraph`, and that the handler's return type matches its data shape.
+The compiler checks that `processing` really exists in `Payment`, and that the handler's return type matches its data shape.
 
 ---
 
@@ -178,22 +200,98 @@ npm install @yaw-rx/ystate rxjs
 ```
 
 1. Define your **nodes**, each with a typed data shape.
-2. Optionally pass other machines via **context**.
+2. Optionally pass other incidence machines via **incidenceMachines**.
 3. Define your **edges** as a function, `(refs) => ({...})` with `from`, `to`, and `on`. This is the graph topology.
 4. Chain `.implement(on => ({...}))` to implement each transition. `on` provides full contextual typing derived from the graph.
 
-*A thin runtime API is on the way; the type system already guarantees correctness.*
-
 ---
 
-## Runtime (planned)
+## Runtime
 
-The runtime will be tiny:
+The API chains naturally from definition to running instance:
 
-- `start(machine, entryNode)` creates an instance.
-- On entry to a node, it subscribes to the `$` observables of all outgoing edges, passing the machine's context.
-- When an observable emits, it runs the pure `on` handler, transitions to the target node, and unsubscribes from the old edges.
-- `machine.state$` exposes an observable of `{ node, data }`.
+```typescript
+const auth = Auth.close().start('loggedOut')
+```
+
+### Closing
+
+`.close()` validates that the incidence machine can produce a set of valid finite state machines. The pipeline:
+
+1. **Classify** - partition incidence machines into absorbed (edges target their nodes) and disconnected (observed only).
+2. **Flatten** - recursively traverse absorbed machines, building fully qualified namespace paths.
+3. **Namespace** - prefix each absorbed machine's nodes and edges with its namespace (e.g. `payment.processing`, `payment.approve`).
+4. **Close the root graph** - resolve cross-machine refs to their namespaced names, merge absorbed subgraphs into the root graph, validate that every edge endpoint exists in the merged node set.
+5. **Provenance** - record where each namespaced node and edge came from, and collect transition implementations indexed by namespace.
+6. **Close disconnected** - recursively validate each disconnected machine independently.
+
+The result is a `MachineSet`: a collection of closed machines where every constituent graph satisfies E ⊆ V x V.
+
+### Starting
+
+`.start(entry, runningMachines?, initialNodeData?)` begins traversal from the given entry node:
+
+- `entry` - the starting node in the root graph.
+- `runningMachines` - running instances of disconnected machines, passed to transition `$` factories for observation.
+- `initialNodeData` - optional partial that overrides the entry node's default data shape.
+
+### Observing state
+
+`node$` emits `{ node, data }` on each state change. `edge$` emits `{ edge, from, to }` on each edge firing.
+
+```typescript
+// Auth cycles between loggedOut and authenticated, it never completes.
+const auth = Auth.close().start('loggedOut')
+
+auth.node$.subscribe(state => console.log(`[${state.node}]`, state.data))
+auth.edge$.subscribe(event =>
+  console.log(`${event.edge}: ${event.from} -> ${event.to}`)
+)
+```
+
+### Composed machines
+
+```typescript
+// Basket:
+//   - absorbs Payment (checkout edge targets payment.processing)
+//   - observes Auth (disconnected, no edges target its nodes)
+//
+// .close():
+//   - classifies: payment = absorbed, auth = disconnected
+//   - namespaces payment's graph: processing -> payment.processing, etc.
+//   - merges basket + payment into the root supergraph
+//   - resolves the checkout edge's target to payment.processing
+//   - validates: every edge endpoint exists in the merged node set
+//   - validates auth independently
+//
+// .start(entry, runningMachines, initialNodeData):
+//   - entry: the starting node in the root graph
+//   - runningMachines: running instances of disconnected machines,
+//     passed to transition $ factories for observation
+//   - initialNodeData: optional partial state for any node in the root graph
+const basket = Basket.close().start('empty', { auth }, { items: ['item-0'] })
+
+// node$ fires for all nodes in the root graph (basket + payment merged).
+// Completes when a terminal node is reached (no outgoing edges),
+// here that's payment.approved or payment.declined.
+basket.node$.subscribe({
+  next: (state) => console.log(`[${state.node}]`, state.data),
+  complete: () => console.log('basket complete'),
+})
+
+// edge$ fires for all edges in the merged graph.
+basket.edge$.subscribe(event =>
+  console.log(`${event.edge}: ${event.from} -> ${event.to}`)
+)
+
+// Each absorbed machine also has its own RunningMachine, filtered
+// from the root streams by namespace.
+basket.runningMachines['payment'].node$.subscribe(state =>
+  console.log(`[payment:${state.node}]`, state.data)
+)
+```
+
+On entry to a node, the runtime subscribes to the `$` observables of all outgoing transitions, passing the running machines. When an observable emits, it runs the pure handler, transitions to the target node, and unsubscribes from the old transitions.
 
 No interpreter, no event matching, no message bus, just observable subscriptions and pure function calls.
 
