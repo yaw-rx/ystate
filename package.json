@@ -2,10 +2,11 @@
   "name": "ystate",
   "private": true,
   "workspaces": [
-    "packages/*"
+    "packages/ystate",
+    "packages/studio"
   ],
   "scripts": {
-    "build": "npm run build --workspaces",
-    "dev": "npm run dev --workspaces"
+    "build": "npm run build --workspaces --if-present",
+    "dev": "npm run dev --workspaces --if-present"
   }
 }

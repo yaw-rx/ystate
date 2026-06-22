@@ -1,5 +1,5 @@
 import { Observable, timer, filter, withLatestFrom } from 'rxjs';
-import { define } from "./index.js"
+import { define } from '@yaw-rx/ystate';
 
 const Auth = define({
   nodes: {
@@ -7,8 +7,8 @@ const Auth = define({
     authenticated: { token: '', authenticatedAt: 0 },
   },
   edges: () => ({
-    login:  { from: 'loggedOut',     to: 'authenticated', on: 'authenticate.next' },
-    expire: { from: 'authenticated', to: 'loggedOut',     on: 'sessionExpire.next' },
+    login: { from: 'loggedOut', to: 'authenticated', on: 'authenticate.next' },
+    expire: { from: 'authenticated', to: 'loggedOut', on: 'sessionExpire.next' },
   }),
 }).implement(on => ({
   authenticate: on.authenticate({
@@ -43,19 +43,19 @@ const Payment = define({
 
 const Basket = define({
   nodes: {
-    empty:      {},
+    empty: {},
     addingItem: { itemId: '' },
-    hasItems:   { items: [] as string[] },
+    hasItems: { items: [] as string[] },
   },
   incidenceMachines: {
     auth: Auth,
     payment: Payment,
   },
   edges: (refs) => ({
-    addFromEmpty:    { from: 'empty',      to: 'addingItem', on: 'addItem.next' },
-    addFromHasItems: { from: 'hasItems',   to: 'addingItem', on: 'addItem.next' },
-    added:           { from: 'addingItem', to: 'hasItems',   on: 'itemAdded.next' },
-    checkout:        { from: 'hasItems',   to: refs.payment.nodes.processing, on: 'checkout.next' },
+    addFromEmpty: { from: 'empty', to: 'addingItem', on: 'addItem.next' },
+    addFromHasItems: { from: 'hasItems', to: 'addingItem', on: 'addItem.next' },
+    added: { from: 'addingItem', to: 'hasItems', on: 'itemAdded.next' },
+    checkout: { from: 'hasItems', to: refs.payment.nodes.processing, on: 'checkout.next' },
   }),
 }).implement(on => ({
   addItem: on.addItem({
@@ -75,13 +75,13 @@ const Basket = define({
     $: (ctx) => timer(500).pipe(
       withLatestFrom(ctx.auth.node$),
       filter(([_, auth]) => {
-         if(auth.node === 'authenticated') {
-            auth.data
-            return true;
-         }
-         auth.data
-         return false;
-        }),
+        if (auth.node === 'authenticated') {
+          auth.data
+          return true;
+        }
+        auth.data
+        return false;
+      }),
     ),
     next: (result) => ({ orderId: 'ORD-001' }),
     error: (result) => ({ items: [] as string[] }),
@@ -143,7 +143,7 @@ basket.runningMachines['payment'].node$.subscribe(state =>
 
 const BasketBroken = define({
   nodes: {
-    empty:    {},
+    empty: {},
     hasItems: { items: [] as string[] },
   },
   incidenceMachines: {

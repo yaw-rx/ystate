@@ -1,0 +1,16 @@
+{
+    "compilerOptions": {
+        "target": "ES2022",
+        "module": "ES2022",
+        "moduleResolution": "bundler",
+        "lib": ["ES2022", "DOM"],
+        "paths": {
+            "rxjs": ["./node_modules/rxjs"],
+            "rxjs/*": ["./node_modules/rxjs/*"]
+        },
+        "plugins": [
+            { "name": "@yaw-rx/ts-plugin" },
+            { "transform": "@yaw-rx/transformer", "import": "programTransformer", "transformProgram": true }
+        ]
+    }
+}

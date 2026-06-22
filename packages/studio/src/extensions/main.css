@@ -1,0 +1,77 @@
+:root {
+    /* backgrounds (dark to light) */
+    --black: #000;
+    --bg-1: #050505;
+    --bg-2: #0a0a0a;
+    --bg-3: #111;
+    --bg-4: #151515;
+    --bg-5: #1a1a1a;
+    --bg-6: #222;
+    --bg-7: #242424;
+
+    /* borders */
+    --border: #333;
+    --border-light: #444;
+
+    /* foreground (dim to bright) -------------------------------- */
+
+    /* --- NEW FLOOR: Lightened to 5.1:1 to force a Lighthouse pass --- */
+    --dim: #808080;        
+    --slate: #828790;      /* Slightly blue, still passes 5.2:1 */
+
+    /* --- VARIETY: Stepped up clearly --- */
+    --muted: #9a9a9a;      /* 7.5:1 ratio */
+    --muted-alt: #a5a5a5;
+    
+    --secondary: #c0c0c0;  /* 12:1 ratio */
+    --subtle: #d1d1d1;
+    
+    --text: #e5e5e5;
+    --text-light: #f5f5f5;
+    --white: #fff;
+
+    /* accent + semantic */
+    --accent: #8af;
+    --navy: #1a2352;
+    --green: #4f4;
+    --red: #f44;
+    --blue: #44f;
+    --amber: #fa4;
+    --gold: #ffcb6b;
+    --salmon: #f78c6c;
+
+    /* typography */
+    --font-mono: monospace;
+    --tracking: 0.08em;  /* letter-spacing for mono labels */
+
+    /* shape */
+    --radius-sm: 4px;
+    --radius: 6px;
+    --radius-lg: 8px;
+    --border-width: 1px;
+}
+
+html {
+    font-size: 100.0%;
+}
+
+html, body {
+    margin: 0;
+    background: var(--bg-7);
+    color: var(--text);
+}
+
+*, *::before, *::after {
+    box-sizing: border-box;
+}
+
+button, rx-button {
+    user-select: none;
+    cursor: pointer;
+    transition: transform 0.1s ease, filter 0.1s ease;
+}
+
+button:active, rx-button:active {
+    transform: scale(0.96);
+    filter: brightness(1.3);
+}
