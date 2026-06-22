@@ -126,7 +126,7 @@ export interface IncidenceGraph<
  * An incidence graph equipped with transition functions δ and optionally
  * other incidence machines whose graphs can resolve open edges.
  *
- * Produced by `defineIncidenceGraph().implement()`. The incidence graph defines
+ * Produced by `define().implement()`. The incidence graph defines
  * the topology (which states exist and how they connect), the transitions
  * define the behaviour (observable triggers and pure state mappers), and the
  * incidence machines supply the foreign graphs referenced by any
@@ -384,7 +384,7 @@ export type StateUnion<TNodes extends Record<string, NodeData>> = {
  *   returns the incidence relation E.
  * @returns `{ incidenceGraph, implement() }`.
  */
-export function defineIncidenceGraph<
+export function define<
   TNodes extends Record<string, NodeData>,
   TIncidenceMachines extends Record<string, any>,
   const TEdges extends Record<string, EdgeDef<TNodes>>,
@@ -429,13 +429,13 @@ export function defineIncidenceGraph<
          *
          * @param entry - The starting node in the root machine's V.
          * @param runningMachines - Running instances of disconnected machines.
-         * @param initialNodeData - Optional partial state for any node in V'.
+         * @param initialNodeData - Partial map of nodes to partial data, amending any node in V'.
          * @returns A `RunningMachineSet`.
          */
         start(
           entry: Extract<keyof TNodes, string>,
           runningMachines?: Record<string, RunningMachine>,
-          initialNodeData?: Partial<Widen<TNodes[Extract<keyof TNodes, string>]>>
+          initialNodeData?: { [K in Extract<keyof TNodes, string>]?: Partial<Widen<TNodes[K]>> }
         ): RunningMachineSet
       }
     } {
@@ -802,7 +802,7 @@ export function closeMachineSet<
 ): MachineSet<TNodes> {
   const { incidenceGraph, incidenceMachines } = incidenceMachine
 
-  const { absorbed, disconnected } = classifyContext(incidenceGraph.edges, incidenceMachines)
+  const { absorbed, disconnected } = classifyContext(incidenceGraph.edges, incidenceMachines) // distinct is probably a better name
 
   const { flattened, namespaceMap } = incidenceMachines && absorbed.length > 0
     ? flattenIncidenceMachines(incidenceMachines, absorbed)
@@ -865,7 +865,7 @@ export interface RunningMachineSet extends RunningMachine {
  * @param machineSet - A `MachineSet` produced by `closeMachineSet()`.
  * @param entry - The starting node (must be a node in the root machine's V).
  * @param runningMachines - Running instances of disconnected machines.
- * @param initialNodeData - Optional partial state for any node in V'.
+ * @param initialNodeData - Partial map of nodes to partial data, amending any node in V'.
  * @returns A `RunningMachineSet`.
  */
 export function startMachineSet<
@@ -874,15 +874,20 @@ export function startMachineSet<
   machineSet: MachineSet<TNodes>,
   entry: Extract<keyof TNodes, string>,
   runningMachines?: Record<string, RunningMachine>,
-  initialNodeData?: Partial<Widen<TNodes[Extract<keyof TNodes, string>]>>,
+  initialNodeData?: { [K in Extract<keyof TNodes, string>]?: Partial<Widen<TNodes[K]>> },
 ): RunningMachineSet {
   const rootGraph = machineSet.graphs[ROOT_NAMESPACE]
   const { provenance } = machineSet
   const edgeSubject = new Subject<{ edge: string; from: string; to: string }>()
 
+  const nodes: Record<string, NodeData> = {}
+  for (const [name, data] of Object.entries(rootGraph.nodes)) {
+    nodes[name] = { ...data, ...initialNodeData?.[name as Extract<keyof TNodes, string>] }
+  }
+
   let current: { node: string; data: NodeData } = {
     node: entry,
-    data: { ...rootGraph.nodes[entry], ...initialNodeData },
+    data: nodes[entry],
   }
   let subs: Subscription[] = []
 
@@ -937,7 +942,7 @@ export function startMachineSet<
           const [edgeName, edge] = match
           const to = edge.to as string
           teardown()
-          const targetData = rootGraph.nodes[to]
+          const targetData = nodes[to]
           const newData = tr.next(value, targetData, current.data) as NodeData
           edgeSubject.next({ edge: edgeName, from: edge.from, to })
           enter(to, newData, subscriber)
@@ -953,7 +958,7 @@ export function startMachineSet<
           const [edgeName, edge] = match
           const to = edge.to as string
           teardown()
-          const targetData = rootGraph.nodes[to]
+          const targetData = nodes[to]
           const newData = tr.error(err, targetData, current.data) as NodeData
           edgeSubject.next({ edge: edgeName, from: edge.from, to })
           enter(to, newData, subscriber)

@@ -1,7 +1,7 @@
 import { Observable, timer, filter, withLatestFrom } from 'rxjs';
-import { defineIncidenceGraph } from "./index.js"
+import { define } from "./index.js"
 
-const Auth = defineIncidenceGraph({
+const Auth = define({
   nodes: {
     loggedOut: { since: 0 },
     authenticated: { token: '', authenticatedAt: 0 },
@@ -23,7 +23,7 @@ const Auth = defineIncidenceGraph({
   }),
 }))
 
-const Payment = defineIncidenceGraph({
+const Payment = define({
   nodes: {
     processing: { orderId: '' },
     approved: { confirmedAt: 0 },
@@ -41,7 +41,7 @@ const Payment = defineIncidenceGraph({
   }),
 }))
 
-const Basket = defineIncidenceGraph({
+const Basket = define({
   nodes: {
     empty:      {},
     addingItem: { itemId: '' },
@@ -119,8 +119,8 @@ auth.edge$.subscribe(event =>
 //   - entry: the starting node in the root graph
 //   - runningMachines: running instances of disconnected machines,
 //     passed to transition $ factories for observation
-//   - initialNodeData: optional partial state for any node in the root graph
-const basket = Basket.close().start('empty', { auth }, { items: ['item-0'] })
+//   - initialNodeData: partial map of nodes to partial data, amending any node in the root graph
+const basket = Basket.close().start('empty', { auth }, { hasItems: { items: ['item-0'] } })
 
 // node$ fires for all nodes in the root graph (basket + payment).
 // Completes when a terminal node is reached (no outgoing edges) -
@@ -141,7 +141,7 @@ basket.runningMachines['payment'].node$.subscribe(state =>
 
 // --- Violations ---
 
-const BasketBroken = defineIncidenceGraph({
+const BasketBroken = define({
   nodes: {
     empty:    {},
     hasItems: { items: [] as string[] },

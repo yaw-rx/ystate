@@ -12,7 +12,7 @@ Most libraries (notably XState) add an imperative runtime, a mutable "context" b
 
 **YState** strips that away. It gives you a graph of **nodes** with typed data, **edges** driven by RxJS observables, and **pure transition functions**.
 
-*No interpreter dispatching event strings. No `assign()`. No `spawn()`/actor model. Just typed, observable-powered graphs that compose like functions.*
+*No interpreter dispatching event strings. No `assign()`. No `spawn()`/pseudo-actor model. Just typed, observable-powered graphs that compose like functions.*
 
 ---
 
@@ -21,7 +21,7 @@ Most libraries (notably XState) add an imperative runtime, a mutable "context" b
 Define the graph topology first. Then implement the transitions, with every parameter inferred from the structure.
 
 ```typescript
-const Basket = defineIncidenceGraph({
+const Basket = define({
   nodes: {
     empty:      {},
     addingItem: { itemId: '' },
@@ -78,14 +78,14 @@ The compiler enforces:
 | **State + data**      | Named state + mutable `context` bag (which breaks the FSM formalism) | FSM 5-tuple (Q, Σ, δ, q₀, F); node name + typed data as one atomic unit |
 | **Transitions**       | String event -> dispatch to interpreter     | Observable subscription -> pure handler            |
 | **Side effects**      | `actions` inside the machine               | External subscribers to edge observables          |
-| **Composition**       | Actor model, `spawn`, string-based messages | Incidence machines with typed node references     |
+| **Composition**       | Pseudo-actor model (`getSnapshot()` breaks isolation), `spawn`, string-based messages | Incidence machines with typed node references     |
 | **Topology**          | Implicit in per-state event config         | Full graph G = (V, E) declared upfront, first-class     |
 | **Graph validation**  | No structural graph validation             | `.close()` proves E ⊆ V × V before the machine can run |
 | **Type safety**       | Build-time typegen step                    | Compile-time only, no codegen                     |
 | **Call stack**        | Broken by interpreter, hard to debug       | Standard RxJS stack traces, debuggable            |
 | **Boilerplate**       | Promise wrapper states (`pending`, ...)    | Async is just an observable; no extra states needed |
 
-YState is a pure finite state machine: a graph of typed nodes and observable-driven edges, with side-effect-free transition functions and no hidden mutable state.
+YState is a factory for pure, runnable, finite state machines: graphs of typed nodes and observable-driven edges, with side-effect-free transition functions and no hidden mutable state.
 
 ---
 
@@ -93,21 +93,31 @@ YState is a pure finite state machine: a graph of typed nodes and observable-dri
 
 ### Pipeline
 
-A finite state machine is formally a 5-tuple (Q, Σ, δ, q₀, F): a set of states Q, an input alphabet Σ, a transition function δ, a start state q₀, and a set of final states F. Most FSM libraries hide this behind imperative runtimes and mutable context bags. YState preserves the formalism and makes each stage of construction explicit:
+A finite state machine is formally a 5-tuple (Q, Σ, δ, q₀, F). Most FSM libraries hide this behind imperative runtimes and mutable context bags. YState preserves the formalism:
+
+| Symbol | Formal name          | YState concept                                                                 |
+|--------|----------------------|--------------------------------------------------------------------------------|
+| Q      | State space          | Each qᵢ ∈ Q is a node.                                                        |
+| Σ      | Input alphabet       | `$` × Q — every possible observable emission (`$`) combined with every possible state.      |
+| δ      | Transition function  | The pure `next` / `error` handlers: `(result, dest?, source?) -> nodeData`.     |
+| q₀     | Start state          | The entry node and initial data for all nodes, passed to `.start()`.           |
+| F      | Final states         | Nodes with no outgoing edges (derived from the graph topology).                |
+
+Each stage of construction makes these explicit:
 
 ```
-IncidenceGraph -> IncidenceMachine ->   MachineSet     ->  RunningMachineSet
-   (V, E)            (V, E, δ,        {(Q, Σ, δ, F)ᵢ}      (MachineSet, q₀)
-                      incidence         E ⊆ V × V                -> 
-                      machines)         for all             {node$, edge$}
-                                        machines
+IncidenceGraph -> IncidenceMachine(IM) ->    MachineSet(MS)     ->  RunningMachineSet
+   (V, E)            (V, E, δ, {IM})        {(Q, Σ, δ, F)ᵢ}           (MS, q₀ⁱ)
+                                               E ⊆ V × V                 -> 
+                                                for all             {node$, edge$}ᵢ
+                                                machines
 ```
 
 - **IncidenceGraph** - the topology: nodes V and an incidence relation E. May be open (edges can reference nodes in other incidence machines). This is the developer's factorisation unit, not yet an FSM.
-- **IncidenceMachine** - an incidence graph equipped with transition functions δ and optionally other incidence machines whose nodes it references. Produced by `defineIncidenceGraph().implement()`. Still not a valid FSM because the graph may be open.
-- **Machine** - a single closed FSM: Q = nodes, Σ = observable emissions, δ = transition functions, F = nodes with no outgoing edges (derived). The graph satisfies E ⊆ V × V. Produced internally during `.close()`.
+- **IncidenceMachine** - an incidence graph equipped with transition functions δ and optionally other incidence machines whose nodes it references. Produced by `define().implement()`. Still not a valid FSM because the graph may be open.
+- **Machine** - a single closed FSM: Q = nodes, Σ = $ × Q, δ = transition functions, F = nodes with no outgoing edges (derived). The graph satisfies E ⊆ V × V. Produced internally during `.close()`.
 - **MachineSet** - a validated collection of Machines, produced by `.close()`. Referenced incidence machines are merged and prefixed into a single closed graph G' = (V', E'). Unreferenced incidence machines are validated independently. Each machine in the set satisfies E ⊆ V × V.
-- **RunningMachineSet** - the live runtime, produced by `.start()`. q₀ is the entry node passed to start. Observable streams over G' and each independent machine.
+- **RunningMachineSet** - the live runtime, produced by `.start()`. q₀ is the entry node and initial data for all nodes. Observable streams over G' and each independent machine.
 
 ### Topology first
 
@@ -221,9 +231,9 @@ The result is a set of machines where every graph is closed. If any graph fails 
 
 `.start(entry, runningMachines?, initialNodeData?)` begins traversal from the given entry node:
 
-- `entry` - the starting node (q₀).
+- `entry` - the starting node.
 - `runningMachines` - running instances of independently validated machines, passed to `$` factories so transitions can observe their state.
-- `initialNodeData` - optional partial that overrides the entry node's default data shape.
+- `initialNodeData` - partial map of nodes to partial data, amending any node's defaults in V'.
 
 ### Observing state
 
@@ -269,8 +279,8 @@ const auth = Auth.close().start('loggedOut')
 //   - entry: the starting node in G'
 //   - runningMachines: running instances of independently validated machines,
 //     passed to transition $ factories for observation
-//   - initialNodeData: optional partial state for any node in G'
-const basket = Basket.close().start('empty', { auth }, { items: ['item-0'] })
+//   - initialNodeData: partial map of nodes to partial data, amending any node in G'
+const basket = Basket.close().start('empty', { auth }, { hasItems: { items: ['item-0'] } })
 ```
 
 ### Root streams
