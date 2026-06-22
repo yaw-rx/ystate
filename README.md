@@ -79,6 +79,7 @@ The compiler enforces:
 | **Transitions**       | String event -> dispatch to interpreter     | Observable subscription -> pure handler            |
 | **Side effects**      | `actions` inside the machine               | External subscribers to edge observables          |
 | **Composition**       | Actor model, `spawn`, string-based messages | Incidence machines with typed node references     |
+| **Topology**          | Implicit in per-state event config         | Full graph G = (V, E) declared upfront, first-class     |
 | **Graph validation**  | No structural graph validation             | `.close()` proves E ⊆ V × V before the machine can run |
 | **Type safety**       | Build-time typegen step                    | Compile-time only, no codegen                     |
 | **Call stack**        | Broken by interpreter, hard to debug       | Standard RxJS stack traces, debuggable            |
