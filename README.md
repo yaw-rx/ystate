@@ -249,47 +249,52 @@ auth.edge$.subscribe(event =>
 )
 ```
 
-### Composed machines
+### Closing a machine set
+
+Basket has two incidence machines: `payment` (absorbed, because the checkout edge targets `payment.processing`) and `auth` (disconnected, because no edges target its nodes). When Basket is closed:
+
+- Payment's graph is namespaced (`processing` becomes `payment.processing`) and merged into the root supergraph alongside Basket's own nodes.
+- The checkout edge's cross-machine ref is resolved to `payment.processing`.
+- The merged graph is validated: every edge endpoint must exist in the merged node set.
+- Auth is closed independently as its own machine.
+
+### Starting a machine set
+
+Disconnected machines must be running before the machine set can start. Their running instances are passed to `.start()` so that transition `$` factories can observe them.
 
 ```typescript
-// Basket:
-//   - absorbs Payment (checkout edge targets payment.processing)
-//   - observes Auth (disconnected, no edges target its nodes)
-//
-// .close():
-//   - classifies: payment = absorbed, auth = disconnected
-//   - namespaces payment's graph: processing -> payment.processing, etc.
-//   - merges basket + payment into the root supergraph
-//   - resolves the checkout edge's target to payment.processing
-//   - validates: every edge endpoint exists in the merged node set
-//   - validates auth independently
-//
-// .start(entry, runningMachines, initialNodeData):
-//   - entry: the starting node in the root graph
-//   - runningMachines: running instances of disconnected machines,
-//     passed to transition $ factories for observation
-//   - initialNodeData: optional partial state for any node in the root graph
+const auth = Auth.close().start('loggedOut')
 const basket = Basket.close().start('empty', { auth }, { items: ['item-0'] })
+```
 
-// node$ fires for all nodes in the root graph (basket + payment merged).
-// Completes when a terminal node is reached (no outgoing edges),
-// here that's payment.approved or payment.declined.
+The third argument is optional initial data for the entry node, overriding its default shape.
+
+### Root streams
+
+`node$` and `edge$` fire for all nodes and edges in the root supergraph (Basket + Payment merged). `node$` completes when the machine reaches a terminal node (no outgoing edges). Here that's `payment.approved` or `payment.declined`.
+
+```typescript
 basket.node$.subscribe({
   next: (state) => console.log(`[${state.node}]`, state.data),
   complete: () => console.log('basket complete'),
 })
 
-// edge$ fires for all edges in the merged graph.
 basket.edge$.subscribe(event =>
   console.log(`${event.edge}: ${event.from} -> ${event.to}`)
 )
+```
 
-// Each absorbed machine also has its own RunningMachine, filtered
-// from the root streams by namespace.
+### Per-namespace access
+
+Each absorbed machine has its own `RunningMachine` filtered from the root streams by namespace prefix:
+
+```typescript
 basket.runningMachines['payment'].node$.subscribe(state =>
   console.log(`[payment:${state.node}]`, state.data)
 )
 ```
+
+### How traversal works
 
 On entry to a node, the runtime subscribes to the `$` observables of all outgoing transitions, passing the running machines. When an observable emits, it runs the pure handler, transitions to the target node, and unsubscribes from the old transitions.
 
