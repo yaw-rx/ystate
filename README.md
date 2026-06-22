@@ -97,9 +97,9 @@ A finite state machine is formally a 5-tuple (Q, Σ, δ, q₀, F): a set of stat
 
 ```
 IncidenceGraph -> IncidenceMachine ->   MachineSet     ->  RunningMachineSet
-   (V, E)            (V, E, δ,        {(Q, Σ, δ, F)ᵢ}     (MachineSet, q₀)
-                      incidence         E ⊆ V × V          -> node$, edge$
-                      machines)         for all
+   (V, E)            (V, E, δ,        {(Q, Σ, δ, F)ᵢ}      (MachineSet, q₀)
+                      incidence         E ⊆ V × V                -> 
+                      machines)         for all             {node$, edge$}
                                         machines
 ```
 
