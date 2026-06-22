@@ -60,7 +60,7 @@ const Toaster = define({
         turnOn: {from: 'off', to: 'on', on: 'onSignal.next'},
 
         onToPower: {from: 'on', to: 'power', on: 'belowLowerLimit.next'},
-        onToIdle: {from: 'on', to: 'idle', on: 'aboveUpperLimit.next'},
+        onToIdle: {from: 'on', to: 'idle', on: 'atOrAboveLowerLimit.next'},
 
         powerToIdle: {from: 'power', to: 'idle', on: 'aboveUpperLimit.next'},
         idleToPower: {from: 'idle', to: 'power', on: 'belowLowerLimit.next'},
@@ -78,6 +78,12 @@ const Toaster = define({
         $: () => turnOffSignal,
         next: () => ({}),
         error: () => false // this should be optional?
+    }),
+    // Fires on entry to 'on' if temperature is already at or above the lower limit
+    atOrAboveLowerLimit: on.atOrAboveLowerLimit({
+        $: () => temperature$.pipe(filter((T) => T >= lowerLimitT)),
+        next: () => ({}),
+        error: () => false
     }),
     // Fires when temperature drops below the lower threshold, triggering heating
     belowLowerLimit: on.belowLowerLimit({
