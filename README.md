@@ -215,23 +215,16 @@ const auth = Auth.close().start('loggedOut')
 
 ### Closing
 
-`.close()` validates that the incidence machine can produce a set of valid finite state machines. The pipeline:
+`.close()` takes an incidence machine and produces a `MachineSet`, a validated collection of closed finite state machines. For each referenced incidence machine, its nodes and edges are prefixed by key and merged into a single graph G' = (V', E'). Cross-machine references are resolved to their prefixed names. The closure property is then verified: every edge endpoint must exist in V' (E' ⊆ V' × V'). Incidence machines not referenced by any edge are validated as independent machines.
 
-1. **Classify** - partition incidence machines into absorbed (edges target their nodes) and disconnected (observed only).
-2. **Flatten** - recursively traverse absorbed machines, building fully qualified namespace paths.
-3. **Namespace** - prefix each absorbed machine's nodes and edges with its namespace (e.g. `payment.processing`, `payment.approve`).
-4. **Close the root graph** - resolve cross-machine refs to their namespaced names, merge absorbed subgraphs into the root graph, validate that every edge endpoint exists in the merged node set.
-5. **Provenance** - record where each namespaced node and edge came from, and collect transition implementations indexed by namespace.
-6. **Close disconnected** - recursively validate each disconnected machine independently.
-
-The result is a `MachineSet`: a collection of closed machines where every constituent graph satisfies E ⊆ V x V.
+The result is a set of machines where every graph is closed. If any graph fails validation, `.close()` throws.
 
 ### Starting
 
 `.start(entry, runningMachines?, initialNodeData?)` begins traversal from the given entry node:
 
-- `entry` - the starting node in the root graph.
-- `runningMachines` - running instances of disconnected machines, passed to transition `$` factories for observation.
+- `entry` - the starting node (q₀).
+- `runningMachines` - running instances of independently validated machines, passed to `$` factories so transitions can observe their state.
 - `initialNodeData` - optional partial that overrides the entry node's default data shape.
 
 ### Observing state
@@ -248,18 +241,9 @@ auth.edge$.subscribe(event =>
 )
 ```
 
-### Closing a machine set
+### Machine sets with multiple machines
 
-Basket has two incidence machines: `payment` (absorbed, because the checkout edge targets `payment.processing`) and `auth` (disconnected, because no edges target its nodes). When Basket is closed:
-
-- Payment's graph is namespaced (`processing` becomes `payment.processing`) and merged into the root supergraph alongside Basket's own nodes.
-- The checkout edge's cross-machine ref is resolved to `payment.processing`.
-- The merged graph is validated: every edge endpoint must exist in the merged node set.
-- Auth is closed independently as its own machine.
-
-### Starting a machine set
-
-Disconnected machines must be running before the machine set can start. Their running instances are passed to `.start()` so that transition `$` factories can observe them.
+Basket references Payment's nodes (via `refs.payment.nodes.processing`) but not Auth's. So `.close()` merges Payment into Basket's graph and validates Auth independently. At `.start()` time, Auth must already be running:
 
 ```typescript
 const auth = Auth.close().start('loggedOut')
@@ -283,9 +267,9 @@ basket.edge$.subscribe(event =>
 )
 ```
 
-### Per-namespace access
+### Per-machine access
 
-Each absorbed machine has its own `RunningMachine` filtered from the root streams by namespace prefix:
+Each merged machine has its own `RunningMachine` view, filtered from the root streams by its prefix:
 
 ```typescript
 basket.runningMachines['payment'].node$.subscribe(state =>
