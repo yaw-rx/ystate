@@ -162,17 +162,16 @@ edges: (refs) => ({
 
 Graphs can reference nodes in other machines directly. Pass other incidence machines via `incidenceMachines`, and the `refs` parameter in the `edges` callback gives you typed access to their nodes.
 
-When a machine is closed, its incidence machines are partitioned into two sets:
+When `.close()` builds the machine set, it looks at the edges to determine which incidence machines are referenced. If any edge targets a node in another machine (via `refs`), that machine's nodes are merged into the graph, prefixed by key (e.g. `processing` becomes `payment.processing`). The result is a single graph G' = (V', E') where V' is the union of all referenced node sets and E' ⊆ V' × V'.
 
-- **Absorbed** - at least one edge targets a node in this machine. Its graph is merged into the root supergraph, namespaced by key (e.g. `payment.processing`). The absorbed machine's transitions become part of the root machine.
-- **Disconnected** - no edges target its nodes. It runs independently and is observed only. A running instance must be provided at `.start()` time so transition `$` factories can subscribe to its streams.
+Incidence machines whose nodes are *not* referenced by any edge are validated independently. They run on their own, and their running instances are passed to `.start()` so that `$` factories can observe them.
 
 ```typescript
 const Basket = defineIncidenceGraph({
   nodes: { ... },
   incidenceMachines: {
-    auth:    Auth,       // disconnected: no edges target auth nodes
-    payment: Payment,    // absorbed: checkout edge targets payment.processing
+    auth:    Auth,       // no edges target auth nodes, so it runs independently
+    payment: Payment,    // checkout targets payment.processing, so it merges in
   },
   edges: (refs) => ({
     checkout: { from: 'hasItems', to: refs.payment.nodes.processing, on: 'checkout.next' },
