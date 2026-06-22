@@ -64,7 +64,7 @@ const Basket = defineIncidenceGraph({
 
 The compiler enforces:
 
-- Every `from` and `to` is a real node, including cross-machine references.
+- Every `from` and `to` is a real node, including references to other incidence machines' nodes.
 - Each handler's `result` type flows from the `$` observable. `dest` and `source` types are derived from the edges.
 - The handler must return exactly the target node's data shape.
 - No annotations needed. No codegen, no build step. Just TypeScript.
@@ -75,10 +75,11 @@ The compiler enforces:
 
 | Concern               | XState                                     | YState                                            |
 |-----------------------|--------------------------------------------|---------------------------------------------------|
-| **State + data**      | Named state + mutable `context` bag        | Node name + typed data as one atomic unit         |
+| **State + data**      | Named state + mutable `context` bag (which breaks the FSM formalism) | FSM 5-tuple (Q, Σ, δ, q₀, F); node name + typed data as one atomic unit |
 | **Transitions**       | String event -> dispatch to interpreter     | Observable subscription -> pure handler            |
 | **Side effects**      | `actions` inside the machine               | External subscribers to edge observables          |
-| **Composition**       | Actor model, `spawn`, string-based messages | Direct node references + observable wiring        |
+| **Composition**       | Actor model, `spawn`, string-based messages | Incidence machines with typed node references     |
+| **Graph validation**  | No structural graph validation             | `.close()` proves E ⊆ V × V before the machine can run |
 | **Type safety**       | Build-time typegen step                    | Compile-time only, no codegen                     |
 | **Call stack**        | Broken by interpreter, hard to debug       | Standard RxJS stack traces, debuggable            |
 | **Boilerplate**       | Promise wrapper states (`pending`, ...)    | Async is just an observable; no extra states needed |
@@ -100,11 +101,11 @@ IncidenceGraph -> IncidenceMachine -> MachineSet -> RunningMachineSet
                    machines)           machines)
 ```
 
-- **IncidenceGraph** - the topology: nodes V and an incidence relation E. May be open (edges can reference nodes outside V via cross-machine refs). This is the developer's factorisation unit, not yet an FSM.
+- **IncidenceGraph** - the topology: nodes V and an incidence relation E. May be open (edges can reference nodes in other incidence machines). This is the developer's factorisation unit, not yet an FSM.
 - **IncidenceMachine** - an incidence graph equipped with transition functions δ and optionally other incidence machines whose nodes it references. Produced by `defineIncidenceGraph().implement()`. Still not a valid FSM because the graph may be open.
 - **Machine** - a single closed FSM: Q = nodes, Σ = observable emissions, δ = transition functions, F = nodes with no outgoing edges (derived). The graph satisfies E ⊆ V × V. Produced internally during `.close()`.
-- **MachineSet** - a validated collection of Machines, produced by `.close()`. Contains the root supergraph (root + absorbed machines, merged and namespaced) plus any disconnected machines, each independently closed. Includes provenance metadata mapping namespaced names back to their origins.
-- **RunningMachineSet** - the live runtime, produced by `.start()`. q₀ is the entry node passed to start. Observable streams over the supergraph's state changes and edge firings.
+- **MachineSet** - a validated collection of Machines, produced by `.close()`. Referenced incidence machines are merged and prefixed into a single closed graph G' = (V', E'). Unreferenced incidence machines are validated independently. Each machine in the set satisfies E ⊆ V × V.
+- **RunningMachineSet** - the live runtime, produced by `.start()`. q₀ is the entry node passed to start. Observable streams over G' and each independent machine.
 
 ### Topology first
 
@@ -128,7 +129,7 @@ nodes: {
 
 Transitions are defined in a second step via `.implement(on => ({...}))`. `on` provides one factory per transition name extracted from the edges. Each factory contextually types its handlers: `result` from the `$` observable's emission type, `dest` from the target node's data shape, and `source` from the source node's data shape. A transition is an object with:
 
-- `$` - an Observable factory (the input alphabet). When the machine has incidence machines, the runtime passes their running instances so transitions can observe their state. It can be a timer, a DOM event, an HTTP call, a stream pipeline, anything reactive.
+- `$` - an Observable factory (the input alphabet). When the incidence machine references other incidence machines, the runtime passes their running instances so transitions can observe their state. It can be a timer, a DOM event, an HTTP call, a stream pipeline, anything reactive.
 - `next` - a pure function `(result, dest?, source?) -> targetNodeData`. The `result` type is inferred from `$`, and `dest`/`source` types are derived from the edges.
 - `error` - a pure function `(error, dest?, source?) -> targetNodeData` for the failure path.
 
@@ -149,22 +150,22 @@ Transitions themselves contain **no side effects**. Side effects happen when *yo
 An edge connects a source node to a target node via `on`, which names the transition and branch in a single field (e.g. `'process.next'` or `'process.error'`).  
 The type system uses the edge's `from`/`to` and the referenced transition to verify that the handler returns exactly the correct shape.
 
-Edges are defined as a function that receives typed refs from the incidence machines, so cross-machine node references are checked at compile time.
+Edges are defined as a function that receives typed refs from the incidence machines, so references to other incidence machines' nodes are checked at compile time.
 
 ```typescript
-edges: (refs) => ({
-  approve: { from: 'processing', to: 'approved',  on: 'process.next' },
-  decline: { from: 'processing', to: 'declined',  on: 'process.error' },
-}),
+  edges: (refs) => ({
+    approve: { from: 'processing', to: 'approved',  on: 'process.next' },
+    decline: { from: 'processing', to: 'declined',  on: 'process.error' },
+  }),
 ```
 
 ### Composition (incidence machines)
 
-Graphs can reference nodes in other machines directly. Pass other incidence machines via `incidenceMachines`, and the `refs` parameter in the `edges` callback gives you typed access to their nodes.
+Incidence machines can reference nodes in other incidence machines. Pass them via `incidenceMachines`, and the `refs` parameter in the `edges` callback gives you typed access to their nodes.
 
 When `.close()` builds the machine set, it looks at the edges to determine which incidence machines are referenced. If any edge targets a node in another machine (via `refs`), that machine's nodes are merged into the graph, prefixed by key (e.g. `processing` becomes `payment.processing`). The result is a single graph G' = (V', E') where V' is the union of all referenced node sets and E' ⊆ V' × V'.
 
-Incidence machines whose nodes are *not* referenced by any edge are validated independently. They run on their own, and their running instances are passed to `.start()` so that `$` factories can observe them.
+Incidence machines whose nodes are *not* referenced by any edge are validated independently by `.close()`. They run as their own machines, and their running instances are passed to `.start()` so that `$` factories can observe them.
 
 ```typescript
 const Basket = defineIncidenceGraph({
@@ -232,10 +233,19 @@ The result is a set of machines where every graph is closed. If any graph fails 
 `node$` emits `{ node, data }` on each state change. `edge$` emits `{ edge, from, to }` on each edge firing.
 
 ```typescript
-// Auth cycles between loggedOut and authenticated, it never completes.
-const auth = Auth.close().start('loggedOut')
+// .close() validates Auth's graph satisfies E ⊆ V × V -
+// every edge's from and to exist in the node set. Throws if not.
+const authMachineSet = Auth.close()
 
+// .start() begins traversal from q₀ and returns a RunningMachineSet.
+// node$ emits { node, data } on each transition,
+// edge$ emits { edge, from, to } on each edge firing.
+const auth = authMachineSet.start('loggedOut')
+
+// node$ emits { node, data } whenever the machine transitions.
 auth.node$.subscribe(state => console.log(`[${state.node}]`, state.data))
+
+// edge$ emits { edge, from, to } on each edge firing.
 auth.edge$.subscribe(event =>
   console.log(`${event.edge}: ${event.from} -> ${event.to}`)
 )
@@ -243,25 +253,43 @@ auth.edge$.subscribe(event =>
 
 ### Machine sets with multiple machines
 
-Basket references Payment's nodes (via `refs.payment.nodes.processing`) but not Auth's. So `.close()` merges Payment into Basket's graph and validates Auth independently. At `.start()` time, Auth must already be running:
+Basket's edges reference Payment's nodes (via `refs.payment.nodes.processing`) but not Auth's. So `.close()` merges Payment's incidence graph into the supergraph G' and validates Auth as an independent machine. At `.start()` time, Auth must already be running:
 
 ```typescript
 const auth = Auth.close().start('loggedOut')
+
+// Basket:
+//   - Payment's nodes are referenced by edges, so its incidence graph
+//     is merged into the supergraph G'
+//   - Auth's nodes are not referenced by any edge, so Auth is
+//     validated independently by .close()
+//
+// .close():
+//   - merges Basket and Payment into the supergraph G'
+//   - validates Auth independently
+//
+// .start(entry, runningMachines, initialNodeData):
+//   - entry: the starting node in G'
+//   - runningMachines: running instances of independently validated machines,
+//     passed to transition $ factories for observation
+//   - initialNodeData: optional partial state for any node in G'
 const basket = Basket.close().start('empty', { auth }, { items: ['item-0'] })
 ```
-
-The third argument is optional initial data for the entry node, overriding its default shape.
 
 ### Root streams
 
 `node$` and `edge$` fire for all nodes and edges in the root supergraph (Basket + Payment merged). `node$` completes when the machine reaches a terminal node (no outgoing edges). Here that's `payment.approved` or `payment.declined`.
 
 ```typescript
+// node$ fires for all nodes in G' (basket + payment merged).
+// Completes when a terminal node is reached (no outgoing edges) -
+// here that's payment.approved or payment.declined.
 basket.node$.subscribe({
   next: (state) => console.log(`[${state.node}]`, state.data),
   complete: () => console.log('basket complete'),
 })
 
+// edge$ fires for all edges in G'.
 basket.edge$.subscribe(event =>
   console.log(`${event.edge}: ${event.from} -> ${event.to}`)
 )
@@ -269,9 +297,11 @@ basket.edge$.subscribe(event =>
 
 ### Per-machine access
 
-Each merged machine has its own `RunningMachine` view, filtered from the root streams by its prefix:
+Each incidence machine whose graph was merged into G' has its own `RunningMachine` view, filtered from the supergraph's streams by namespace prefix:
 
 ```typescript
+// Each incidence machine whose graph was merged into G' has its own
+// RunningMachine, filtered from the supergraph's streams by namespace prefix.
 basket.runningMachines['payment'].node$.subscribe(state =>
   console.log(`[payment:${state.node}]`, state.data)
 )
