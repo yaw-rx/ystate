@@ -96,10 +96,11 @@ YState is a pure finite state machine: a graph of typed nodes and observable-dri
 A finite state machine is formally a 5-tuple (Q, Σ, δ, q₀, F): a set of states Q, an input alphabet Σ, a transition function δ, a start state q₀, and a set of final states F. Most FSM libraries hide this behind imperative runtimes and mutable context bags. YState preserves the formalism and makes each stage of construction explicit:
 
 ```
-IncidenceGraph -> IncidenceMachine  -> MachineSet    -> RunningMachineSet
-   (V, E)          (V, E, δ,           (closed,         (live observable
-                    incidence            validated         streams)
-                    machines)            machines)
+IncidenceGraph -> IncidenceMachine ->   MachineSet     ->  RunningMachineSet
+   (V, E)            (V, E, δ,        {(Q, Σ, δ, F)ᵢ}     (MachineSet, q₀)
+                      incidence         E ⊆ V × V          -> node$, edge$
+                      machines)         for all
+                                        machines
 ```
 
 - **IncidenceGraph** - the topology: nodes V and an incidence relation E. May be open (edges can reference nodes in other incidence machines). This is the developer's factorisation unit, not yet an FSM.
