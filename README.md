@@ -119,11 +119,12 @@ The complete state of the machine at any moment is `{ node: 'authenticated', dat
 No separate context bag that can get out of sync.
 
 ```typescript
-nodes: {
-  empty:      {},
-  addingItem: { itemId: '' },
-  hasItems:   { items: [] as string[] },
-},
+...
+  nodes: {
+    empty:      {},
+    addingItem: { itemId: '' },
+    hasItems:   { items: [] as string[] },
+  },
 ```
 
 ### Transitions
@@ -137,6 +138,7 @@ Transitions are defined in a second step via `.implement(on => ({...}))`. `on` p
 Transitions themselves contain **no side effects**. Side effects happen when *you* subscribe to the edge observables, outside the machine.
 
 ```typescript
+...
 .implement(on => ({
   process: on.process({
     $: () => timer(3000),
@@ -154,6 +156,7 @@ The type system uses the edge's `from`/`to` and the referenced transition to ver
 Edges are defined as a function that receives typed refs from the incidence machines, so references to other incidence machines' nodes are checked at compile time.
 
 ```typescript
+...
   edges: (refs) => ({
     approve: { from: 'processing', to: 'approved',  on: 'process.next' },
     decline: { from: 'processing', to: 'declined',  on: 'process.error' },
@@ -168,26 +171,18 @@ When `.close()` builds the machine set, it looks at the edges to determine which
 
 Incidence machines whose nodes are *not* referenced by any edge are validated independently by `.close()`. They run as their own machines, and their running instances are passed to `.start()` so that `$` factories can observe them.
 
+In the Basket [example above](#quick-look), the checkout edge targets `refs.payment.nodes.processing`, which means Payment's incidence graph will be merged into the supergraph G' when `.close()` runs. Auth's nodes are not referenced by any edge, so `.close()` validates Auth as an independent machine.
+
 ```typescript
-const Basket = defineIncidenceGraph({
-  nodes: { ... },
+...
   incidenceMachines: {
-    auth:    Auth,       // no edges target auth nodes, so it runs independently
-    payment: Payment,    // checkout targets payment.processing, so it merges in
+    auth: Auth,
+    payment: Payment,
   },
   edges: (refs) => ({
+    ...
     checkout: { from: 'hasItems', to: refs.payment.nodes.processing, on: 'checkout.next' },
   }),
-}).implement(on => ({
-  checkout: on.checkout({
-    $: (ctx) => timer(500).pipe(
-      withLatestFrom(ctx.auth.node$),
-      filter(([_, auth]) => auth.node === 'authenticated'),
-    ),
-    next: (result) => ({ orderId: 'ORD-001' }),
-    error: (result) => ({ items: [] as string[] }),
-  }),
-}))
 ```
 
 The compiler checks that `processing` really exists in `Payment`, and that the handler's return type matches its data shape.
