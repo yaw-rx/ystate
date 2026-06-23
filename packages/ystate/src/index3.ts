@@ -133,58 +133,180 @@ export interface IncidenceGraph<
 }
 
 /**
- * An IncidenceGraphSet equipped with transition functions and dependencies.
- * Carries the graph topology [G = (V, E)], the transition implementations
- * [δ = { δᵢ }], and a K-indexed family of dependency IncidenceMachines
- * [{ Gₖ }ₖ∈K] whose graphs can resolve open edges
- * [∃ e = (v₁, v₂) ∈ E where v₂ ∉ V].
+ * An IncidenceGraph equipped with a K-indexed family of dependency
+ * IncidenceGraphSets [{ Gₖ }ₖ∈K]. The deps record carries the graphs
+ * whose nodes may be referenced by open edges [∃ e = (v₁, v₂) ∈ E
+ * where v₂ ∈ Vₖ, v₂ ∉ V] via `DepNodeRef`.
  *
- * Produced by `define().implement()`. Not yet a valid FSM: the graph may
- * be open and has not been validated. Call `closeMachineSet()` to validate
- * closure [E ⊆ V × V] and produce a `MachineSet`.
+ * An IncidenceGraphSet is itself an IncidenceGraph; the set always
+ * contains at least one member (itself), so the minimum size is 1.
+ *
+ * Produced by `define()`. Not yet a valid closed graph: the edge set
+ * may reference nodes outside V. Call `.close()` to validate closure
+ * [E ⊆ V × V] and produce an `IncidenceGraphSetCorrespondence`, the
+ * preimage and image maps of the namespaceFunctors applied during
+ * closure [{ fₖ, fₖ⁻¹ | fₖ ∈ applied namespaceFunctors }]. Since
+ * each fₖ is an injective graph homomorphism, fₖ⁻¹ is well-defined
+ * on im(fₖ).
  *
  * @template TNodes - V = { vᵢ }, the node set.
  * @template TEdges - E = { eᵢ }, the incidence relation.
- * @template TTransitions - δ = { δᵢ }, the transition implementations.
+ */
+export interface IncidenceGraphSet<
+  TNodes extends Record<string, NodeData>,
+  TEdges extends Record<string, EdgeDef<TNodes>>
+> extends IncidenceGraph<TNodes, TEdges> {
+  deps: Record<string, IncidenceGraphSet<Record<string, NodeData>, Record<string, EdgeDef>>>
+}
+
+/**
+ * An IncidenceGraphSet equipped with transition functions [δ = { δⱼ }].
+ * The K-indexed family of dependencies [{ Gₖ }ₖ∈K] is narrowed from
+ * IncidenceGraphSets to IncidenceMachines, so each Gₖ also carries its
+ * own transition functions [δₖ = { δⱼ }ₖ].
+ *
+ * Produced by `define().implement()`. Not yet a valid FSM: the graph may
+ * be open and has not been validated. Call `.close()` to validate closure
+ * [E ⊆ V × V], compute F, and produce a `MachineSet`.
+ *
+ * @template TNodes - The node set [V = { vᵢ }].
+ * @template TEdges - The incidence relation [E = { eᵢ }].
+ * @template TTransitions - The transition implementations [δ = { δⱼ }].
  */
 export interface IncidenceMachine<
   TNodes extends Record<string, NodeData>,
   TEdges extends Record<string, EdgeDef<TNodes>>,
   TTransitions extends Record<string, TransitionDef>
-> {
-  incidenceGraph: IncidenceGraph<TNodes, TEdges>
+> extends IncidenceGraphSet<TNodes, TEdges> {
   transitions: TTransitions
   deps: Record<string, IncidenceMachine<Record<string, NodeData>, Record<string, EdgeDef>, Record<string, TransitionDef>>>
 }
 
+// --- Mixin interfaces ---
+
 /**
- * Metadata for a closed machine's supergraph G' = (V', E').
+ * An IncidenceGraphSet with method extensions for the pipeline.
+ * Two branches from the same starting point, both validating
+ * closure [E ⊆ V × V]:
  *
- * **Graph provenance**: maps each namespaced node and edge in G' back
- * to its origin, the namespace it was unioned from and its local name.
- * Root-level elements have `namespace: ''` and `localName` equal to the
- * global name. Unioned elements have `namespace: 'payment'` (or deeper
- * paths like `'payment.sub'`) and the original unqualified name.
+ * - `close()` validates closure [E ⊆ V × V]. If deps exist,
+ *   applies the namespaceFunctors [{ fₖ: Gₖ → G' }] and
+ *   computes the correspondence maps [{ fₖ, fₖ⁻¹ }]. Returns a
+ *   `ClosedIncidenceGraphSet`.
+ * - `implement()` validates closure internally, then equips
+ *   the IncidenceGraphSet with transition functions [δ = { δⱼ }],
+ *   producing an `IncidenceMachineMixin`. The topology is the
+ *   contract; implementing against a broken contract is not
+ *   permitted and will throw `ClosureError`.
  *
- * **Transition lookup**: collects the transition implementations
- * [δ = { δⱼ }] from the root machine and all unioned dep machines,
- * indexed by namespace so the runtime can resolve which δⱼ handles a
- * given edge without walking the composition tree.
+ * @template TNodes - The node set [V = { vᵢ }].
+ * @template TEdges - The incidence relation [E = { eᵢ }].
  */
-export interface MachineProvenance {
-  // --- Graph provenance: where each element in G' came from ---
+export interface IncidenceGraphSetMixin<
+  TNodes extends Record<string, NodeData>,
+  TEdges extends Record<string, EdgeDef<TNodes>>
+> extends IncidenceGraphSet<TNodes, TEdges> {
+  implement<TTransitions extends Record<TransitionNames<TEdges>, TransitionDef>>(
+    factory: (t: TransitionBuilders<TNodes, this['deps'], TEdges>) => TTransitions
+  ): IncidenceMachineMixin<TNodes, TEdges, TTransitions>
+  close(): ClosedIncidenceGraphSet<TNodes, TEdges>
+}
 
-  /** Maps each namespaced node in V' to its source namespace and local name. */
-  nodes: Record<string, { namespace: string; localName: string }>
-  /** Maps each namespaced edge in E' to its source namespace and local name. */
-  edges: Record<string, { namespace: string; localName: string }>
+/**
+ * An IncidenceMachine with a `close()` method. Delegates to
+ * IncidenceGraphSet closure for the topology (already validated
+ * at `implement()` time), then performs machine-level closure,
+ * producing a `MachineSetMixin`.
+ *
+ * @template TNodes - The node set [V = { vᵢ }].
+ * @template TEdges - The incidence relation [E = { eᵢ }].
+ * @template TTransitions - The transition implementations [δ = { δⱼ }].
+ */
+export interface IncidenceMachineMixin<
+  TNodes extends Record<string, NodeData>,
+  TEdges extends Record<string, EdgeDef<TNodes>>,
+  TTransitions extends Record<string, TransitionDef>
+> extends IncidenceMachine<TNodes, TEdges, TTransitions> {
+  close(): MachineSetMixin<TNodes>
+}
 
-  // --- Transition lookup: δ collected from root + unioned machines ---
+/**
+ * A MachineSet with a `start()` method that begins traversing the root
+ * supergraph [G' = (V', E')], producing a `RunningMachineSet`.
+ *
+ * @template TNodes - The node set [V = { vᵢ }] of the root IncidenceMachine.
+ */
+export interface MachineSetMixin<
+  TNodes extends Record<string, NodeData> = Record<string, NodeData>
+> extends MachineSet<TNodes> {
+  start(
+    entry: Extract<keyof TNodes, string>,
+    runningMachines?: Record<string, RunningMachine>,
+    initialNodeData?: { [K in Extract<keyof TNodes, string>]?: Partial<Widen<TNodes[K]>> }
+  ): RunningMachineSet
+}
 
-  /** Transition implementations [δ = { δⱼ }] indexed by namespace, then
-   *  by local transition name within that namespace's machine.
-   *  e.g. `transitions['payment']['process']` is the payment dep's `process` δⱼ.
-   *  Root machine transitions live under `transitions['']`. */
+/**
+ * A closed IncidenceGraphSet where closure has been validated
+ * [E ⊆ V × V]. If deps existed, the correspondence maps of
+ * the applied namespaceFunctors [{ fₖ, fₖ⁻¹ }] are included.
+ *
+ * @template TNodes - The node set [V = { vᵢ }].
+ * @template TEdges - The incidence relation [E = { eᵢ }].
+ */
+export interface ClosedIncidenceGraphSet<
+  TNodes extends Record<string, NodeData>,
+  TEdges extends Record<string, EdgeDef<TNodes>>
+> extends IncidenceGraphSet<TNodes, TEdges> {
+  correspondence: IncidenceGraphSetCorrespondence
+}
+
+/**
+ * Records the forward and inverse maps of the namespaceFunctors
+ * applied during closure. Each namespaceFunctor fₖ is an injective
+ * graph homomorphism [fₖ: Gₖ → G']. Since fₖ is injective, its
+ * inverse fₖ⁻¹ is well-defined on im(fₖ).
+ *
+ * - `image`: the forward map [fₖ: Vₖ → V', Eₖ → E'], mapping local
+ *   names to their namespaced global names. Keyed by namespace.
+ * - `preimage`: the inverse map [fₖ⁻¹: im(fₖ) → Vₖ, im(fₖ) → Eₖ],
+ *   mapping global names back to their local names. Keyed by namespace.
+ */
+export interface Correspondence {
+  preimage: Record</* namespace */ string, {
+    nodes: Record</* global */ string, /* local */ string>
+    edges: Record</* global */ string, /* local */ string>
+  }>
+  image: Record</* namespace */ string, {
+    nodes: Record</* local */ string, /* global */ string>
+    edges: Record</* local */ string, /* global */ string>
+  }>
+}
+
+/**
+ * Correspondence extended with the unioned/disjoint classification
+ * of dep keys [K = R ∪ (K \ R)]. Produced by `IncidenceGraphSet.close()`.
+ *
+ * - `unioned` [R ⊆ K]: deps to which a namespaceFunctor fₖ was applied
+ *   [fₖ: Gₖ → G'], their nodes and edges appear in the correspondence maps.
+ * - `disjoint` [K \ R]: deps with node sets disjoint from the supergraph
+ *   [Vₖ ∩ V' = ∅], no fₖ was applied.
+ */
+export interface IncidenceGraphSetCorrespondence extends Correspondence {
+  unioned: string[]
+  disjoint: string[]
+}
+
+/**
+ * Correspondence extended with the transition lookup. Produced by
+ * `IncidenceMachine.close()`. Collects the transition functions
+ * [δ = { δⱼ }] from the root machine and all unioned deps, indexed
+ * by the namespace assigned by each namespaceFunctor fₖ so the
+ * runtime can resolve which δⱼ handles a given edge via
+ * `transitions[fₖ(ns)][j]` without walking the composition tree.
+ * Root machine transitions live under `transitions['']`.
+ */
+export interface MachineCorrespondence extends IncidenceGraphSetCorrespondence {
   transitions: Record</* namespace */ string, Record</* local transition name */ string, TransitionDef>>
 }
 
@@ -249,6 +371,8 @@ export const ROOT_NAMESPACE = ''
 export interface Machine {
   graph: IncidenceGraph<Record<string, NodeData>, Record<string, EdgeDef>>
   transitions: Record<string, TransitionDef>
+  /** The terminal node set [F = { v ∈ V | outdeg(v) = 0 }]. */
+  F: string[]
 }
 
 /**
@@ -513,7 +637,7 @@ export function define<
       })
       const transitions = factory(builders)
 
-      const im: IncidenceMachine<TNodes, TEdges, TTransitions> = { incidenceGraph, transitions, deps: def.deps ?? {} }
+      const im: IncidenceMachine<TNodes, TEdges, TTransitions> = { nodes: incidenceGraph.nodes, edges: incidenceGraph.edges, transitions, deps: def.deps ?? {} }
       return {
         ...im,
         close() {
