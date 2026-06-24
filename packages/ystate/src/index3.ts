@@ -310,7 +310,84 @@ export interface MachineCorrespondence extends IncidenceGraphSetCorrespondence {
   transitions: Record</* namespace */ string, Record</* local transition name */ string, TransitionDef>>
 }
 
-export const ROOT_NAMESPACE = ''
+// --- Closure errors ---
+
+/**
+ * An IncidenceGraphSet closure issue. Each variant identifies
+ * the edge [e ∈ E] that violates closure [E ⊆ V × V] and
+ * carries enough context to diagnose the problem, including
+ * the available alternatives where applicable.
+ */
+export type IncidenceGraphSetClosureIssue =
+  | { kind: 'missing-dep'; edge: string; dep: string; availableDeps: string[] }
+  | { kind: 'missing-dep-node'; edge: string; dep: string; node: string; availableNodes: string[] }
+  | { kind: 'missing-target'; edge: string; node: string; namespace: string; availableNodes: string[] }
+  | { kind: 'missing-source'; edge: string; node: string; namespace: string; availableNodes: string[] }
+  | { kind: 'namespace-collision'; namespace: string; node: string; existingNamespace: string }
+
+/**
+ * IncidenceGraphSet closure failed [E ⊄ V × V]. Thrown by
+ * `IncidenceGraphSet.close()` and internally by `implement()`
+ * when the topology contract is broken.
+ */
+export class IncidenceGraphSetClosureError extends Error {
+  issues: IncidenceGraphSetClosureIssue[]
+  constructor(issues: IncidenceGraphSetClosureIssue[]) {
+    const lines = issues.map(i => {
+      switch (i.kind) {
+        case 'missing-dep':
+          return `  edge '${i.edge}': dep '${i.dep}' not in K. Available deps [K = {${i.availableDeps.join(', ')}}]`
+        case 'missing-dep-node':
+          return `  edge '${i.edge}': node '${i.node}' not in dep '${i.dep}'. Available [V_${i.dep} = {${i.availableNodes.join(', ')}}]`
+        case 'missing-target':
+          return `  edge '${i.edge}': target '${i.node}' not in V'${i.namespace ? ` (namespace '${i.namespace}')` : ''}. Available [V' = {${i.availableNodes.join(', ')}}]`
+        case 'missing-source':
+          return `  edge '${i.edge}': source '${i.node}' not in V${i.namespace ? ` (namespace '${i.namespace}')` : ''}. Available [V = {${i.availableNodes.join(', ')}}]`
+        case 'namespace-collision':
+          return `  namespaceFunctor collision: node '${i.node}' in namespace '${i.namespace}' already exists from namespace '${i.existingNamespace}'`
+      }
+    })
+    super(`IncidenceGraphSet closure failed [E ⊄ V × V]:\n${lines.join('\n')}`)
+    this.issues = issues
+  }
+}
+
+/**
+ * An IncidenceMachine closure issue. Each variant identifies an edge
+ * [e ∈ E] with a transition-level problem and carries enough context
+ * to diagnose it: a missing δⱼ at a given namespace, a malformed
+ * edge binding, or a namespace with no collected transitions.
+ */
+export type IncidenceMachineClosureIssue =
+  | { kind: 'missing-transition'; edge: string; transition: string; namespace: string; availableTransitions: string[] }
+  | { kind: 'malformed-edge-on'; edge: string; on: string }
+  | { kind: 'missing-namespace-transitions'; edge: string; namespace: string; availableNamespaces: string[] }
+
+/**
+ * IncidenceMachine closure failed. The topology is valid [E ⊆ V × V]
+ * but one or more edges reference transition functions [δⱼ] that
+ * have no implementation.
+ */
+export class IncidenceMachineClosureError extends Error {
+  issues: IncidenceMachineClosureIssue[]
+  constructor(issues: IncidenceMachineClosureIssue[]) {
+    const lines = issues.map(i => {
+      switch (i.kind) {
+        case 'missing-transition':
+          return `  edge '${i.edge}': transition '${i.transition}' not in δ at namespace '${i.namespace}'. Available [δ = {${i.availableTransitions.join(', ')}}]`
+        case 'malformed-edge-on':
+          return `  edge '${i.edge}': malformed on field '${i.on}', expected '{name}.{next|error}'`
+        case 'missing-namespace-transitions':
+          return `  edge '${i.edge}': no transitions at namespace '${i.namespace}'. Available namespaces [{${i.availableNamespaces.join(', ')}}]`
+      }
+    })
+    super(`IncidenceMachine closure failed:\n${lines.join('\n')}`)
+    this.issues = issues
+  }
+}
+
+/** The namespace key for the root supergraph G' in a MachineSet, Correspondence, and RunningMachineSet. */
+export const ROOT = ''
 
 /**
  * A single closed *finite* state machine using a data-on-node model:
@@ -326,9 +403,9 @@ export const ROOT_NAMESPACE = ''
  *   [q(n+1) = (v', δⱼ(σₙ, dᵥ', dₙ))]. Here dₙ is the source data
  *   from q(n) and dᵥ' is the dest node's stored data from its own
  *   last visit (a different machine time). N is finite if q(N) ∈ F.
- * - Σ: the input alphabet. $ is the external environment, the set of
- *   all observable emissions from outside the machine; the machine does
- *   not control $ and it may be unbounded. Each transition δⱼ receives
+ * - Σ: the input alphabet. $ is the external environment modelled as
+ *   an Observable monad; its emissions are outside the machine's
+ *   control and may be unbounded. Each transition δⱼ receives
  *   an observation from $, the source data [dₙ from q(n)], the
  *   destination node's stored data [dᵥ' from its own last visit], and
  *   the edge j being traversed. The full input is known only at
@@ -382,7 +459,7 @@ export interface Machine {
  *
  * - `graphs`: all closed graphs keyed by namespace. The root supergraph
  *   [G' = (V', E'), the graph union of root + unioned deps after
- *   namespaceFunctor] lives at `ROOT_NAMESPACE` (`''`). Disjoint
+ *   namespaceFunctor] lives at `ROOT` (`''`). Disjoint
  *   machines live at their namespace key.
  * - `machines`: the `Machine` instances keyed by namespace, each owning
  *   its closed graph and transition implementations [δ = { δⱼ }].
@@ -497,9 +574,9 @@ export type ExpectedHandler<
 
 /**
  * The shape of a transition within the `implement()` callback.
- * The `$` factory produces an observable over the environment, and the
- * `next` and `error` handlers are the transition functions [δⱼ] that
- * compute the next state q(n+1).
+ * The `$` factory returns an Observable monad over the environment,
+ * and the `next` and `error` handlers are the transition functions
+ * [δⱼ] that compute the next state q(n+1).
  *
  * @template TNodes - The node set [V = { vᵢ }].
  * @template TIncidenceMachines - A K-indexed family of dep IncidenceMachines [{ IMₖ }ₖ∈K].
@@ -508,7 +585,7 @@ export type ExpectedHandler<
  * @template TResult - The emission type from the `$` observable [∈ $].
  */
 export type TransitionShape<TNodes extends Record<string, NodeData>, TIncidenceMachines, TEdges, TOn extends string, TResult> = {
-  /** Observable factory that triggers the transition. Receives the running machines. */
+  /** Environment monad factory; returns an Observable whose emissions feed into δⱼ. */
   $: (runningMachines: RunningMachinesOf<TIncidenceMachines>) => Observable<TResult>
   /** Success handler, called when `$` emits. */
   next: ExpectedHandler<TNodes, TEdges, TOn, 'next', TResult>
@@ -910,7 +987,7 @@ export function flattenIncidenceMachines(
  * Derives provenance metadata from a root incidence graph and a set of
  * flattened, namespaced incidence machines.
  *
- * For the root graph G = (V, E) at `ROOT_NAMESPACE`, and for each
+ * For the root graph G = (V, E) at `ROOT`, and for each
  * unioned machine at namespace `ns` with namespaced graph
  * Gₙₛ = fₙₛ(Gₖ) = (Vₙₛ, Eₙₛ):
  *
@@ -935,12 +1012,12 @@ export function buildMachineProvenance<
   const provenance: MachineProvenance = { nodes: {}, edges: {}, transitions: {} }
 
   for (const nodeName of Object.keys(rootGraph.nodes)) {
-    provenance.nodes[nodeName] = { namespace: ROOT_NAMESPACE, localName: nodeName }
+    provenance.nodes[nodeName] = { namespace: ROOT, localName: nodeName }
   }
   for (const edgeName of Object.keys(rootGraph.edges)) {
-    provenance.edges[edgeName] = { namespace: ROOT_NAMESPACE, localName: edgeName }
+    provenance.edges[edgeName] = { namespace: ROOT, localName: edgeName }
   }
-  provenance.transitions[ROOT_NAMESPACE] = rootTransitions
+  provenance.transitions[ROOT] = rootTransitions
 
   for (const { namespace: ns, namespacedGraph, transitions } of flattened) {
     provenance.transitions[ns] = transitions
@@ -1005,17 +1082,17 @@ export function closeMachineSet<
   const provenance = buildMachineProvenance(incidenceGraph, incidenceMachine.transitions, namespacedEntries)
 
   const graphs: Record<string, IncidenceGraph<Record<string, NodeData>, Record<string, EdgeDef>>> = {
-    [ROOT_NAMESPACE]: rootGraph,
+    [ROOT]: rootGraph,
   }
   const machines: Record<string, Machine> = {
-    [ROOT_NAMESPACE]: { graph: rootGraph, transitions: provenance.transitions[ROOT_NAMESPACE] },
+    [ROOT]: { graph: rootGraph, transitions: provenance.transitions[ROOT] },
   }
 
   for (const key of disjoint) {
     const disjointIM = deps[key]
     const disjointSet = closeMachineSet(disjointIM)
-    graphs[key] = disjointSet.graphs[ROOT_NAMESPACE]
-    machines[key] = disjointSet.machines[ROOT_NAMESPACE]
+    graphs[key] = disjointSet.graphs[ROOT]
+    machines[key] = disjointSet.machines[ROOT]
   }
 
   return { graphs, machines, provenance }
@@ -1027,7 +1104,7 @@ export function closeMachineSet<
  * A running collection of machines. Provides uniform `RunningMachine`
  * access for every namespace in the `MachineSet`:
  *
- * - `ROOT_NAMESPACE`: the root supergraph's full `state$`/`event$` streams.
+ * - `ROOT`: the root supergraph's full `state$`/`event$` streams.
  * - Unioned namespaces: filtered views of the root streams by prefix
  *   [each fₖ(Gₖ) contributes a namespace prefix to V'].
  * - Disjoint namespaces: the running instances passed in, stored as-is
@@ -1064,7 +1141,7 @@ export function startMachineSet<
   runningMachines?: Record<string, RunningMachine>,
   initialNodeData?: { [K in Extract<keyof TNodes, string>]?: Partial<Widen<TNodes[K]>> },
 ): RunningMachineSet {
-  const rootGraph = machineSet.graphs[ROOT_NAMESPACE]
+  const rootGraph = machineSet.graphs[ROOT]
   const { provenance } = machineSet
   const edgeSubject = new Subject<{ edge: string; from: string; to: string }>()
 
@@ -1110,7 +1187,7 @@ export function startMachineSet<
 
     for (const [edgeName, edge] of outgoing) {
       const { name: transitionName, handler } = parseEdgeOn(edge)
-      const ns = provenance.edges[edgeName]?.namespace ?? ROOT_NAMESPACE
+      const ns = provenance.edges[edgeName]?.namespace ?? ROOT
       const groupKey = `${ns}:${transitionName}`
 
       if (!grouped.has(groupKey)) {
@@ -1176,13 +1253,13 @@ export function startMachineSet<
   const rootEvent$ = edgeSubject.asObservable()
 
   const result: Record<string, RunningMachine> = {
-    [ROOT_NAMESPACE]: { state$: rootState$, event$: rootEvent$ },
+    [ROOT]: { state$: rootState$, event$: rootEvent$ },
   }
 
   const absorbedNamespaces = new Set(
     Object.values(provenance.nodes)
       .map(p => p.namespace)
-      .filter(ns => ns !== ROOT_NAMESPACE)
+      .filter(ns => ns !== ROOT)
   )
   for (const ns of absorbedNamespaces) {
     const prefix = `${ns}.`
