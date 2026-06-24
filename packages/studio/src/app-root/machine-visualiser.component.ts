@@ -49,7 +49,7 @@ const turnOffSignal = turnOffSubject.pipe(filter((signal) => signal === true));
 
 // The thermostat cycles between power (heating) and idle based on room temperature.
 // It can be turned on from off, and turned off from either power or idle.
-const Toaster = define({
+const Heater = define({
     nodes: {
         on: {},
         off: {},
@@ -99,12 +99,17 @@ const Toaster = define({
     }),
 }));
 
-const toaster = Toaster.close().start('on');
-const toasterState$ = toaster.node$;
+const heater = Heater.close().start('on');
+const heaterState$ = heater.state$;
 
+// Physics simulation outside the machine. The heater influences the
+// environment (heat output raises temperature$) and the environment
+// influences the heater (temperature$ crosses thresholds that trigger
+// transitions between power and idle). Neither side owns the loop;
+// they are coupled through shared observables.
 // Each tick applies dT = (q_heater - k * (roomT - environmentT)) / mC
 timer(0, 1000).pipe(
-    mergeMap(() => combineLatest([temperature$, toasterState$]).pipe(take(1))),
+    mergeMap(() => combineLatest([temperature$, heaterState$]).pipe(take(1))),
     map(([roomT, toasterState]) => {
         const heatLoss = wallConductance * (roomT - environmentT); // W
         const heaterOutput = toasterState.node === 'power' ? heaterPower : 0; // W
