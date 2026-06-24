@@ -192,7 +192,7 @@ export interface IncidenceMachine<
  * - `close()` validates closure [E ⊆ V × V]. If deps exist,
  *   applies the namespaceFunctors [{ fₖ: Gₖ → G' }] and
  *   computes the correspondence maps [{ fₖ, fₖ⁻¹ }]. Returns a
- *   `ClosedIncidenceGraphSet`.
+ *   `FibredGraph`.
  * - `implement()` validates closure internally, then equips
  *   the IncidenceGraphSet with transition functions [δ = { δⱼ }],
  *   producing an `IncidenceMachineMixin`. The topology is the
@@ -209,7 +209,7 @@ export interface IncidenceGraphSetMixin<
   implement<TTransitions extends Record<TransitionNames<TEdges>, TransitionDef>>(
     factory: (t: TransitionBuilders<TNodes, this['deps'], TEdges>) => TTransitions
   ): IncidenceMachineMixin<TNodes, TEdges, TTransitions>
-  close(): ClosedIncidenceGraphSet<TNodes, TEdges>
+  close(): FibredGraph<TNodes, TEdges>
 }
 
 /**
@@ -247,14 +247,17 @@ export interface MachineSetMixin<
 }
 
 /**
- * A closed IncidenceGraphSet where closure has been validated
- * [E ⊆ V × V]. If deps existed, the correspondence maps of
- * the applied namespaceFunctors [{ fₖ, fₖ⁻¹ }] are included.
+ * A graph equipped with its fibre decomposition over the
+ * namespaceFunctors that built it. Closure has been proven
+ * [E ⊆ V × V], and the correspondence records the fibres
+ * of each fₖ: Gₖ → G'. Since each fₖ is injective, the
+ * fibres are singletons, giving a clean 1:1 map between
+ * local and global names in both directions [fₖ, fₖ⁻¹].
  *
  * @template TNodes - The node set [V = { vᵢ }].
  * @template TEdges - The incidence relation [E = { eᵢ }].
  */
-export interface ClosedIncidenceGraphSet<
+export interface FibredGraph<
   TNodes extends Record<string, NodeData>,
   TEdges extends Record<string, EdgeDef<TNodes>>
 > extends IncidenceGraphSet<TNodes, TEdges> {
