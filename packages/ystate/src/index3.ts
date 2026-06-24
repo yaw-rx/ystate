@@ -472,8 +472,9 @@ export interface Machine {
  *   machines live at their namespace key.
  * - `machines`: the `Machine` instances keyed by namespace, each owning
  *   its closed graph and transition implementations [δ = { δⱼ }].
- * - `provenance`: metadata mapping namespaced names back to their source
- *   IncidenceGraphSets, plus the collected transition lookup by namespace.
+ * - `correspondence`: the fibre decomposition of G' over the
+ *   namespaceFunctors [{ fₖ, fₖ⁻¹ }], extended with the collected
+ *   transition implementations [δ] keyed by namespace.
  *
  * `startMachineSet()` requires a `MachineSet`; an unclosed IncidenceMachine
  * cannot be started because its edge set may reference nodes outside V.
@@ -483,7 +484,7 @@ export interface Machine {
 export interface MachineSet<TNodes extends Record<string, NodeData> = Record<string, NodeData>> {
   graphs: Record<string, IncidenceGraph<Record<string, NodeData>, Record<string, EdgeDef>>>
   machines: Record<string, Machine>
-  provenance: MachineProvenance
+  correspondence: MachineCorrespondence
 }
 
 /**
@@ -695,7 +696,7 @@ export function define<
       /**
        * Closes the incidence machine by validating all constituent graphs.
        * Delegates to `closeMachineSet`. See its docstring for the full
-       * algorithm: classify, flatten, namespace, close, provenance.
+       * algorithm: classify, flatten, namespace, close, correspondence.
        *
        * @returns A `MachineSet` with a `.start()` method for chaining.
        */
@@ -993,7 +994,7 @@ export function flattenIncidenceMachines(
 }
 
 /**
- * Derives provenance metadata from a root incidence graph and a set of
+ * Derives correspondence metadata from a root incidence graph and a set of
  * flattened, namespaced incidence machines.
  *
  * For the root graph G = (V, E) at `ROOT`, and for each
@@ -1008,37 +1009,37 @@ export function flattenIncidenceMachines(
  * @param rootGraph - The root incidence graph [G = (V, E)].
  * @param rootTransitions - The root machine's transition implementations [δ = { δⱼ }].
  * @param flattened - The flattened unioned IncidenceMachines with their namespaced graphs.
- * @returns A `MachineProvenance` mapping global names to their origins.
+ * @returns A `MachineCorrespondence` mapping global names to their origins.
  */
-export function buildMachineProvenance<
+export function buildMachineCorrespondence<
   TNodes extends Record<string, NodeData>,
   TEdges extends Record<string, EdgeDef<TNodes>>
 >(
   rootGraph: IncidenceGraph<TNodes, TEdges>,
   rootTransitions: Record<string, TransitionDef>,
   flattened: { namespace: string; namespacedGraph: IncidenceGraph<Record<string, NodeData>, Record<string, EdgeDef>>; transitions: Record<string, TransitionDef> }[]
-): MachineProvenance {
-  const provenance: MachineProvenance = { nodes: {}, edges: {}, transitions: {} }
+): MachineCorrespondence {
+  const correspondence: MachineCorrespondence = { nodes: {}, edges: {}, transitions: {} }
 
   for (const nodeName of Object.keys(rootGraph.nodes)) {
-    provenance.nodes[nodeName] = { namespace: ROOT, localName: nodeName }
+    correspondence.nodes[nodeName] = { namespace: ROOT, localName: nodeName }
   }
   for (const edgeName of Object.keys(rootGraph.edges)) {
-    provenance.edges[edgeName] = { namespace: ROOT, localName: edgeName }
+    correspondence.edges[edgeName] = { namespace: ROOT, localName: edgeName }
   }
-  provenance.transitions[ROOT] = rootTransitions
+  correspondence.transitions[ROOT] = rootTransitions
 
   for (const { namespace: ns, namespacedGraph, transitions } of flattened) {
-    provenance.transitions[ns] = transitions
+    correspondence.transitions[ns] = transitions
     for (const nodeName of Object.keys(namespacedGraph.nodes)) {
-      provenance.nodes[nodeName] = { namespace: ns, localName: nodeName.slice(ns.length + 1) }
+      correspondence.nodes[nodeName] = { namespace: ns, localName: nodeName.slice(ns.length + 1) }
     }
     for (const edgeName of Object.keys(namespacedGraph.edges)) {
-      provenance.edges[edgeName] = { namespace: ns, localName: edgeName.slice(ns.length + 1) }
+      correspondence.edges[edgeName] = { namespace: ns, localName: edgeName.slice(ns.length + 1) }
     }
   }
 
-  return provenance
+  return correspondence
 }
 
 /**
@@ -1054,14 +1055,14 @@ export function buildMachineProvenance<
  * 3. **Namespace** each flattened entry by applying namespaceFunctor
  *    fₖ: Gₖ → Gₖ' [injective graph homomorphism].
  * 4. **Close** the root graph via `closeGraph` with the images { Gₖ' }.
- * 5. **Provenance** via `buildMachineProvenance`.
+ * 5. **Correspondence** via `buildMachineCorrespondence`.
  * 6. **Close disjoint** machines recursively via `closeMachineSet`.
  *
  * Every graph in the resulting set is independently closed
  * [E ⊆ V × V]. If any graph fails, the whole set fails.
  *
  * @param incidenceMachine - IM = (G, δ, { IMₖ }ₖ∈K), the IncidenceMachine to close.
- * @returns A `MachineSet` with closed graphs, machines, and provenance.
+ * @returns A `MachineSet` with closed graphs, machines, and correspondence.
  * @throws If any constituent graph fails closure [E ⊄ V × V].
  */
 export function closeMachineSet<
@@ -1088,13 +1089,13 @@ export function closeMachineSet<
   const subgraphs = namespacedEntries.map(e => e.namespacedGraph)
   const rootGraph = closeGraph(incidenceGraph, namespaceMap, subgraphs)
 
-  const provenance = buildMachineProvenance(incidenceGraph, incidenceMachine.transitions, namespacedEntries)
+  const correspondence = buildMachineCorrespondence(incidenceGraph, incidenceMachine.transitions, namespacedEntries)
 
   const graphs: Record<string, IncidenceGraph<Record<string, NodeData>, Record<string, EdgeDef>>> = {
     [ROOT]: rootGraph,
   }
   const machines: Record<string, Machine> = {
-    [ROOT]: { graph: rootGraph, transitions: provenance.transitions[ROOT] },
+    [ROOT]: { graph: rootGraph, transitions: correspondence.transitions[ROOT] },
   }
 
   for (const key of disjoint) {
@@ -1104,7 +1105,7 @@ export function closeMachineSet<
     machines[key] = disjointSet.machines[ROOT]
   }
 
-  return { graphs, machines, provenance }
+  return { graphs, machines, correspondence }
 }
 
 // --- Runtime ---
@@ -1132,8 +1133,8 @@ export interface RunningMachineSet extends RunningMachine {
  * runs, producing q(n+1). Previous subscriptions are torn down before
  * entering the new node.
  *
- * Transition resolution uses the provenance lookup, indexed by namespace
- * then by local transition name [provenance.transitions[ns][j] → δⱼ],
+ * Transition resolution uses the correspondence lookup, indexed by namespace
+ * then by local transition name [correspondence.transitions[ns][j] → δⱼ],
  * so no runtime tree-walking of the composition tree is required.
  *
  * @param machineSet - A `MachineSet` produced by `closeMachineSet()`.
@@ -1151,7 +1152,7 @@ export function startMachineSet<
   initialNodeData?: { [K in Extract<keyof TNodes, string>]?: Partial<Widen<TNodes[K]>> },
 ): RunningMachineSet {
   const rootGraph = machineSet.graphs[ROOT]
-  const { provenance } = machineSet
+  const { correspondence } = machineSet
   const edgeSubject = new Subject<{ edge: string; from: string; to: string }>()
 
   const nodes: Record<string, NodeData> = {}
@@ -1196,7 +1197,7 @@ export function startMachineSet<
 
     for (const [edgeName, edge] of outgoing) {
       const { name: transitionName, handler } = parseEdgeOn(edge)
-      const ns = provenance.edges[edgeName]?.namespace ?? ROOT
+      const ns = correspondence.edges[edgeName]?.namespace ?? ROOT
       const groupKey = `${ns}:${transitionName}`
 
       if (!grouped.has(groupKey)) {
@@ -1206,7 +1207,7 @@ export function startMachineSet<
     }
 
     for (const { transitionName, namespace: ns, edges } of grouped.values()) {
-      const tr = provenance.transitions[ns]?.[transitionName]
+      const tr = correspondence.transitions[ns]?.[transitionName]
       if (!tr) continue
 
       const sub = (tr.$(runningMachines ?? {}) as Observable<unknown>).subscribe({
@@ -1266,7 +1267,7 @@ export function startMachineSet<
   }
 
   const absorbedNamespaces = new Set(
-    Object.values(provenance.nodes)
+    Object.values(correspondence.nodes)
       .map(p => p.namespace)
       .filter(ns => ns !== ROOT)
   )
