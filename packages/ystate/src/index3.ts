@@ -466,10 +466,11 @@ export interface Machine {
  * `closeMachineSet()`. Every constituent graph satisfies closure
  * [E ⊆ V × V].
  *
- * - `graphs`: all closed graphs keyed by namespace. The root supergraph
- *   [G' = (V', E'), the graph union of root + unioned deps after
- *   namespaceFunctor] lives at `ROOT` (`''`). Disjoint
- *   machines live at their namespace key.
+ * - `graphs`: all closed graphs keyed by namespace, each labelled with
+ *   its `kind`. The root supergraph [G' = (V', E'), the graph union
+ *   of root + unioned deps after namespaceFunctor] lives at `ROOT`
+ *   (`''`) with kind `'root'`. Disjoint machines live at their
+ *   namespace key with kind `'disjoint'`.
  * - `machines`: the `Machine` instances keyed by namespace, each owning
  *   its closed graph and transition implementations [δ = { δⱼ }].
  * - `correspondence`: the fibre decomposition of G' over the
@@ -482,7 +483,7 @@ export interface Machine {
  * @template TNodes - V = { vᵢ }, the node set of the root IncidenceMachine.
  */
 export interface MachineSet<TNodes extends Record<string, NodeData> = Record<string, NodeData>> {
-  graphs: Record<string, IncidenceGraph<Record<string, NodeData>, Record<string, EdgeDef>>>
+  graphs: Record<string, { graph: IncidenceGraph<Record<string, NodeData>, Record<string, EdgeDef>>; kind: 'root' | 'disjoint' }>
   machines: Record<string, Machine>
   correspondence: MachineCorrespondence
 }
@@ -1114,14 +1115,15 @@ export function closeMachineSet<
  * A running collection of machines. Provides uniform `RunningMachine`
  * access for every namespace in the `MachineSet`:
  *
- * - `ROOT`: the root supergraph's full `state$`/`event$` streams.
+ * - `ROOT`: the root supergraph's full `state$`/`event$` streams,
+ *   kind `'root'`.
  * - Unioned namespaces: filtered views of the root streams by prefix
- *   [each fₖ(Gₖ) contributes a namespace prefix to V'].
- * - Disjoint namespaces: the running instances passed in, stored as-is
- *   [Vₖ ∩ V' = ∅, runs independently].
+ *   [each fₖ(Gₖ) contributes a namespace prefix to V'], kind `'unioned'`.
+ * - Disjoint namespaces: independent running instances passed in
+ *   [Vₖ ∩ V' = ∅], kind `'disjoint'`.
  */
 export interface RunningMachineSet extends RunningMachine {
-  runningMachines: Record<string, RunningMachine>
+  runningMachines: Record<string, RunningMachine & { kind: 'root' | 'unioned' | 'disjoint' }>
 }
 
 /**
