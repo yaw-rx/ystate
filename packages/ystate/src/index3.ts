@@ -412,12 +412,12 @@ export const ROOT = ''
  *   data the machine itself wrote on a prior visit, the machine's
  *   own past outputs feed back as future inputs through Σ. Because
  *   dᵥ' enters via Σ, Q remains the disjoint union; no additional
- *   internal memory is needed. The full
- *   input is known only at runtime, and the complete alphabet can
- *   only be determined by running the machine. The coproduct over E
- *   selects both the edge and its target node's data space
- *   [∐ⱼ∈E D_{target(j)}], giving the full alphabet as the product
- *   with the environment [Σ = $ × ∐ⱼ∈E D_{target(j)}].
+ *   internal memory is needed. The full input is known only at
+ *   runtime, and the complete alphabet can only be determined by
+ *   running the machine. The coproduct over E selects both the edge
+ *   and its target node's data space [∐ⱼ∈E D_{target(j)}], giving
+ *   the full alphabet as the product with the environment
+ *   [Σ = $ × ∐ⱼ∈E D_{target(j)}].
  * - δ: the transition functions [δ = { δᵢ }].
  * - F: terminal nodes, those with no outgoing edges
  *   [F = { v ∈ V | outdeg(v) = 0 }].
