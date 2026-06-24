@@ -176,30 +176,35 @@ auth.event$.subscribe(event =>
   console.log(`${event.edge}: ${event.from} -> ${event.to}`)
 )
 
+// status$ emits the machine's lifecycle state: 'running', 'complete', or 'error'.
+auth.status$.subscribe(status => console.log(`auth status: ${status}`))
+
 // Basket:
-//   - unions Payment (checkout edge targets payment.processing)
-//   - observes Auth (disjoint - no edges target its nodes)
+//   - Payment's nodes are referenced by edges, so its graph
+//     is merged into the supergraph G'
+//   - Auth's nodes are not referenced by any edge, so Auth
+//     is validated independently by .close()
 //
 // .close():
-//   - unions Basket and Payment into the supergraph via namespaceFunctors
+//   - merges Basket and Payment into the supergraph G'
 //   - validates Auth independently
 //
 // .start(entry, runningMachines, initialNodeData):
-//   - entry: the starting node in the root machine's V
-//   - runningMachines: running instances of disjoint machines,
+//   - entry: the starting node in G'
+//   - runningMachines: running instances of independently validated machines,
 //     passed to transition $ factories for observation
-//   - initialNodeData: partial map of nodes to partial data, amending any node in V'
+//   - initialNodeData: partial map of nodes to partial data, amending any node in G'
 const basket = Basket.close().start('empty', { auth }, { hasItems: { items: ['item-0'] } })
 
-// state$ fires for all nodes in the supergraph (basket + payment).
-// Completes when a terminal node is reached [v ∈ F, outdeg(v) = 0] -
+// state$ fires for all nodes in G' (basket + payment merged).
+// Completes when a terminal node is reached (no outgoing edges) -
 // here that's payment.approved, payment.declined, or payment.stalled.
 basket.state$.subscribe({
   next: (state) => console.log(`[${state.node}]`, state.data),
   complete: () => console.log('basket complete'),
 })
 
-// event$ fires for all edges in the supergraph.
+// event$ fires for all edges in G'.
 basket.event$.subscribe({
   next: (event) => console.log(`${event.edge}: ${event.from} -> ${event.to}`),
   error: (err) => {
@@ -213,8 +218,11 @@ basket.event$.subscribe({
   },
 })
 
-// Each unioned machine also has its own RunningMachine, filtered
-// from the root streams by namespace.
+// status$ emits the machine's lifecycle state: 'running', 'complete', or 'error'.
+basket.status$.subscribe(status => console.log(`basket status: ${status}`))
+
+// Each machine whose graph was merged into G' has its own
+// RunningMachine, filtered from the root streams by namespace.
 basket.runningMachines['payment'].state$.subscribe(state =>
   console.log(`[payment:${state.node}]`, state.data)
 )

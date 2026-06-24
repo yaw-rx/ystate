@@ -1,4 +1,4 @@
-import { Observable, Subject, filter, type Subscriber, type Subscription } from 'rxjs';
+import { BehaviorSubject, Observable, Subject, filter, type Subscriber, type Subscription } from 'rxjs';
 
 /**
  * Core library for defining pure finite state machines with typed nodes,
@@ -584,7 +584,7 @@ export interface MachineSet<
  *   All names are namespaced, so filtering by prefix yields a subgraph's events.
  */
 export interface RunningMachine {
-  status: MachineStatus
+  status$: Observable<MachineStatus>
   state$: Observable<{ node: string; data: NodeData }>
   event$: Observable<{ edge: string; from: string; to: string }>
 }
@@ -1321,7 +1321,7 @@ machineSet: MachineSet<TNodes, TEdges, TTransitions>,
     nodes[name] = { ...data, ...initialNodeData?.[name as Extract<keyof TNodes, string>] }
   }
 
-  let status: MachineStatus = 'running'
+  const status$ = new BehaviorSubject<MachineStatus>('running')
   let current: { node: string; data: NodeData } = {
     node: entry,
     data: nodes[entry],
@@ -1344,7 +1344,7 @@ machineSet: MachineSet<TNodes, TEdges, TTransitions>,
 
     const outgoing = Object.entries(rootGraph.edges).filter(([_, e]) => e.from === namespacedNode)
     if (outgoing.length === 0) {
-      status = 'complete'
+      status$.next('complete')
       edgeSubject.complete()
       subscriber.complete()
       return
@@ -1389,7 +1389,7 @@ machineSet: MachineSet<TNodes, TEdges, TTransitions>,
           const match = edges.find(([_, __, h]) => h === 'error')
           if (!match || !tr.error) {
             const wrapped = new MachineUnhandledError(current.node, transitionName, ns, err)
-            status = 'error'
+            status$.next('error')
             teardown()
             edgeSubject.error(wrapped)
             subscriber.error(wrapped)
@@ -1407,7 +1407,7 @@ machineSet: MachineSet<TNodes, TEdges, TTransitions>,
           const match = edges.find(([_, __, h]) => h === 'complete')
           if (!match || !tr.complete) {
             const wrapped = new MachineCompletionError(current.node, transitionName, ns)
-            status = 'error'
+            status$.next('error')
             teardown()
             edgeSubject.error(wrapped)
             subscriber.error(wrapped)
@@ -1431,7 +1431,7 @@ machineSet: MachineSet<TNodes, TEdges, TTransitions>,
 
     const outgoing = Object.entries(rootGraph.edges).filter(([_, e]) => e.from === entry)
     if (outgoing.length === 0) {
-      status = 'complete'
+      status$.next('complete')
       edgeSubject.complete()
       subscriber.complete()
     } else {
@@ -1446,18 +1446,17 @@ machineSet: MachineSet<TNodes, TEdges, TTransitions>,
 
   const rootEvent$ = edgeSubject.asObservable()
 
-  function withStatus<T>(obj: T): T & { status: MachineStatus } {
-    Object.defineProperty(obj, 'status', { get() { return status }, enumerable: true })
-    return obj as T & { status: MachineStatus }
+  function withStatus$<T extends object>(obj: T): T & { status$: Observable<MachineStatus> } {
+    return Object.assign(obj, { status$: status$.asObservable() })
   }
 
   const result: Record<string, RunningMachine & { kind: NamespaceKind }> = {
-    [ROOT]: withStatus({ state$: rootState$, event$: rootEvent$, kind: 'unioned' as const }),
+    [ROOT]: withStatus$({ state$: rootState$, event$: rootEvent$, kind: 'unioned' as const }),
   }
 
   for (const ns of correspondence.unioned) {
     const prefix = `${ns}.`
-    result[ns] = withStatus({
+    result[ns] = withStatus$({
       state$: rootState$.pipe(filter(s => s.node.startsWith(prefix) || s.node === ns)),
       event$: rootEvent$.pipe(filter(e => e.edge.startsWith(prefix))),
       kind: 'unioned' as const,
@@ -1470,5 +1469,5 @@ machineSet: MachineSet<TNodes, TEdges, TTransitions>,
     }
   }
 
-  return withStatus({ state$: rootState$, event$: rootEvent$, runningMachines: result, source: machineSet })
+  return withStatus$({ state$: rootState$, event$: rootEvent$, runningMachines: result, source: machineSet })
 }
