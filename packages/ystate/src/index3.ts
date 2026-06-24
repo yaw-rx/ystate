@@ -407,13 +407,17 @@ export const ROOT = ''
  *   an Observable monad; its emissions are outside the machine's
  *   control and may be unbounded. Each transition δⱼ receives
  *   an observation from $, the source data [dₙ from q(n)], the
- *   destination node's stored data [dᵥ' from its own last visit], and
- *   the edge j being traversed. The full input is known only at
- *   runtime, and the complete alphabet can only be determined by
- *   running the machine. The coproduct over E selects both the edge
- *   and its target node's data space [∐ⱼ∈E D_{target(j)}], giving
- *   the full alphabet as the product with the environment
- *   [Σ = $ × ∐ⱼ∈E D_{target(j)}].
+ *   destination node's stored data [dᵥ' ∈ D_{target(j)}, from its
+ *   own last visit], and the edge j being traversed. Because dᵥ' is
+ *   data the machine itself wrote on a prior visit, the machine's
+ *   own past outputs feed back as future inputs through Σ. Because
+ *   dᵥ' enters via Σ, Q remains the disjoint union; no additional
+ *   internal memory is needed. The full
+ *   input is known only at runtime, and the complete alphabet can
+ *   only be determined by running the machine. The coproduct over E
+ *   selects both the edge and its target node's data space
+ *   [∐ⱼ∈E D_{target(j)}], giving the full alphabet as the product
+ *   with the environment [Σ = $ × ∐ⱼ∈E D_{target(j)}].
  * - δ: the transition functions [δ = { δᵢ }].
  * - F: terminal nodes, those with no outgoing edges
  *   [F = { v ∈ V | outdeg(v) = 0 }].
@@ -426,11 +430,13 @@ export const ROOT = ''
  * state space; all components are fully typed at compile time.
  *
  * The reachable subset of Q depends on the runtime execution of δ,
- * and Σ in turn depends on Q since D_{target(j)} is drawn from the
- * same data spaces. For sufficiently rich transition functions the
- * trajectory [q(0), ..., q(N)] is computationally irreducible;
- * determining which states the machine visits, or whether N is finite,
- * may require running it.
+ * and Σ in turn depends on Q because the values in D_{target(j)} at
+ * step n are those the machine itself wrote on earlier visits. This
+ * self-referential feedback loop means each step reshapes the inputs
+ * available to future steps. For sufficiently rich transition
+ * functions the trajectory [q(0), ..., q(N)] is computationally
+ * irreducible; determining which states the machine visits, or
+ * whether N is finite, may require running it.
  *
  * The data-on-node model is a concise finite description of a potentially
  * much larger (possibly infinite) state machine.
