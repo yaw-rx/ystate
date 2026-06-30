@@ -39,12 +39,12 @@ const Auth = define({
     authenticated: { token: '', authenticatedAt: 0 },
     loginFailed: { reason: '' },
   },
-  edges: () => ({
+  edges: {
     login: { from: 'loggedOut', to: 'authenticated', on: 'authenticate.next' },
     loginError: { from: 'loggedOut', to: 'loginFailed', on: 'authenticate.error' },
     retry: { from: 'loginFailed', to: 'loggedOut', on: 'retryLogin.next' },
     expire: { from: 'authenticated', to: 'loggedOut', on: 'sessionExpire.next' },
-  }),
+  },
 }).implement({
   // simulateLogin() can error for various reasons (server unreachable,
   // invalid credentials, account locked, rate limited), so authenticate
@@ -79,11 +79,11 @@ const Payment = define({
     declined: { reason: '' },
     stalled: { orderId: '' },
   },
-  edges: () => ({
+  edges: {
     approve: { from: 'processing', to: 'approved', on: 'process.next' },
     decline: { from: 'processing', to: 'declined', on: 'process.error' },
     stall: { from: 'processing', to: 'stalled', on: 'process.complete' },
-  }),
+  },
 }).implement({
   // simulatePayment() can emit (approved), error (declined), or complete
   // without emission (stalled). All three outcomes are handled by edges

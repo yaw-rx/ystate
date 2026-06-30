@@ -743,8 +743,8 @@ export type StateUnion<TNodes extends Record<string, NodeData>> = {
  * @param def.nodes - V = { vᵢ }, the node set with typed data shapes.
  * @param def.deps - (Optional) A K-indexed family of IncidenceMachines { Gₖ }ₖ∈K
  *   whose nodes may be referenced by edges via `DepNodeRef`.
- * @param def.edges - A function receiving a `DepProxy` over { Gₖ }ₖ∈K,
- *   returns E = { eᵢ }, the incidence relation.
+ * @param def.edges - A record or a function receiving a `DepProxy` over { Gₖ }ₖ∈K,
+ *   returning E = { eᵢ }, the incidence relation.
  * @returns `{ incidenceGraph, implement() }`.
  */
 export function define<
@@ -754,10 +754,10 @@ export function define<
 >(def: {
   nodes: TNodes
   deps?: TDeps
-  edges: (refs: DepProxy<TDeps>) => TEdges
+  edges: TEdges | ((refs: DepProxy<TDeps>) => TEdges)
 }) {
   const depRefs = def.deps ? defineDeps(def.deps) : ({} as DepProxy<TDeps>)
-  const edgeDefs = def.edges(depRefs)
+  const edgeDefs = typeof def.edges === 'function' ? def.edges(depRefs) : def.edges
 
   const incidenceGraphSet: IncidenceGraphSet<TNodes, TEdges> = { nodes: def.nodes, edges: edgeDefs, deps: def.deps ?? {} }
 

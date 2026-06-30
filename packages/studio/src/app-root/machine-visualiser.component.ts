@@ -56,7 +56,7 @@ const Heater = define({
         power: {},
         idle: {}
     },
-    edges: () => ({
+    edges: {
         turnOn: {from: 'off', to: 'on', on: 'onSignal.next'},
 
         onToPower: {from: 'on', to: 'power', on: 'belowLowerLimit.next'},
@@ -67,7 +67,7 @@ const Heater = define({
 
         powerToOff: {from: 'power', to: 'off', on: 'offSignal.next'},
         idleToOff: {from: 'idle', to: 'off', on: 'offSignal.next'},
-    })
+    }
 }).implement({
     onSignal: {
         $: () => turnOnSignal,
