@@ -36,31 +36,31 @@ const Basket = define({
     added:           { from: 'addingItem', to: 'hasItems',   on: 'itemAdded.next' },
     checkout:        { from: 'hasItems',   to: refs.payment.nodes.processing, on: 'checkout.next' },
   }),
-}).implement(on => ({
+}).implement({
   // simulateAddItem() can throw 'item out of stock', so addItem needs
   // error edges in the graph to handle it.
-  addItem: on.addItem({
+  addItem: {
     $: () => simulateAddItem(),
     next: (result, _dest, _source, edge) => ({ itemId: `${result.itemId}-via-${edge}` }),
     error: (err, dest, _source, edge) => ({ error: `${edge}: ${String(err)}`, items: dest.items }),
-  }),
+  },
   // simulateItemConfirmation() is a simple timer that cannot error or
   // complete without emission, so no error or complete edges are needed.
-  itemAdded: on.itemAdded({
+  itemAdded: {
     $: () => simulateItemConfirmation(),
     next: (_result, dest, source) => ({ items: [...dest.items, source.itemId] }),
-  }),
+  },
   // checkout waits for auth to be authenticated before emitting. The
   // observable cannot error or complete, so no error or complete edges
   // are needed.
-  checkout: on.checkout({
+  checkout: {
     $: (deps) => timer(500).pipe(
       withLatestFrom(deps.auth.state$),
       filter(([_, auth]) => auth.node === 'authenticated'),
     ),
     next: (_result, _dest, _source, edge) => ({ orderId: `ORD-${Date.now()}-${edge}` }),
-  }),
-}))
+  },
+})
 ```
 
 The compiler enforces:
@@ -110,7 +110,7 @@ YState uses a **data-on-node** model to realise this 5-tuple: each node v ∈ V 
 | Σ      | Σ = $ × ∐j∈E D_{target(j)}. `$` is the external environment modelled as an Observable monad; its emissions are outside the machine's control. The coproduct over E selects the edge and the target node's stored data from its last visit. Because that stored data is something the machine itself wrote on a prior visit, the machine's own past outputs feed back as future inputs through Σ, without expanding Q. |
 | δ      | δ = { δⱼ }. Each δⱼ is a pure function `(result, dest, source, edge) -> targetNodeData`. The Observable monad `$` has three outcomes, each a handler direction: `next` (emission), `error` (failure), `complete` (completion without emission). |
 | q₀     | The entry node and initial data for all nodes, passed to `.start()`.           |
-| F      | F = { v ∈ V | outdeg(v) = 0 }. Derived from the graph topology. When the machine reaches v ∈ F, `state$` completes. |
+| F      | F = { v ∈ V \| outdeg(v) = 0 }. Derived from the graph topology. When the machine reaches v ∈ F, `state$` completes. |
 
 **The self-referential feedback loop.** The destination data dv' that δⱼ receives at step n is the value the machine wrote on its own last visit to v'. Σ depends on Q: each step reshapes the inputs available to future steps. For sufficiently rich transition functions the trajectory q(0), ..., q(N) is computationally irreducible; determining which states the machine visits, or whether N is finite, may require running it.
 
@@ -149,7 +149,7 @@ IncidenceGraph -> IncidenceGraphSet -> IncidenceMachine -> FibredGraph -> Machin
 
 ### Topology first
 
-YState separates the graph structure from the transition logic. You declare the topology first, nodes and edges, establishing which states exist and how they connect. Then you implement the transitions via `.implement(on => ({...}))`, where `on` derives every parameter type from the graph structure. The topology is the contract; the type system enforces it.
+YState separates the graph structure from the transition logic. You declare the topology first, nodes and edges, establishing which states exist and how they connect. Then you implement the transitions via `.implement({...})`, where every parameter type is derived from the graph structure. The topology is the contract; the type system enforces it.
 
 ### Nodes
 
@@ -168,7 +168,7 @@ No separate context bag that can get out of sync.
 
 ### Transitions
 
-Transitions are defined in a second step via `.implement(on => ({...}))`. `on` provides one factory per transition name extracted from the edges. Each factory contextually types its handlers: `result` from the `$` observable's emission type, `dest` from the target node's data shape, `source` from the source node's data shape, and `edge` the name of the edge being traversed. A transition is an object with:
+Transitions are defined in a second step via `.implement({...})`, one key per transition name extracted from the edges. Each key contextually types its handlers: `result` from the `$` observable's emission type, `dest` from the target node's data shape, `source` from the source node's data shape, and `edge` the name of the edge being traversed. A transition is an object with:
 
 - `$` - an Observable factory over the external environment. When the incidence machine has dependencies (`deps`), the runtime passes their running instances so transitions can observe their state. It can be a timer, a DOM event, an HTTP call, a stream pipeline, anything reactive.
 - `next` - a pure function `(result, dest, source, edge) -> targetNodeData`. The `result` type is inferred from `$`, `dest`/`source` types are derived from the edges, and `edge` is the name of the edge being traversed.
@@ -179,17 +179,17 @@ Transitions themselves contain **no side effects**. Side effects happen when *yo
 
 ```typescript
 ...
-.implement(on => ({
-  addItem: on.addItem({
+.implement({
+  addItem: {
     $: () => simulateAddItem(),
     next: (result, _dest, _source, edge) => ({ itemId: `${result.itemId}-via-${edge}` }),
     error: (err, dest, _source, edge) => ({ error: `${edge}: ${String(err)}`, items: dest.items }),
-  }),
-  itemAdded: on.itemAdded({
+  },
+  itemAdded: {
     $: () => simulateItemConfirmation(),
     next: (_result, dest, source) => ({ items: [...dest.items, source.itemId] }),
-  }),
-}))
+  },
+})
 ```
 
 ### Edges
@@ -241,7 +241,7 @@ npm install @yaw-rx/ystate rxjs
 1. Define your **nodes**, each with a typed data shape.
 2. Optionally declare other incidence machines as dependencies via **`deps`**.
 3. Define your **edges** as a function, `(refs) => ({...})` with `from`, `to`, and `on`. This is the graph topology.
-4. Chain `.implement(on => ({...}))` to implement each transition. `on` provides full contextual typing derived from the graph.
+4. Chain `.implement({...})` to implement each transition, with full contextual typing derived from the graph.
 
 ## Runtime
 
@@ -440,31 +440,31 @@ const Heater = define({
         powerToOff: {from: 'power', to: 'off', on: 'offSignal.next'},
         idleToOff: {from: 'idle', to: 'off', on: 'offSignal.next'},
     })
-}).implement((on) => ({
-    onSignal: on.onSignal({
+}).implement({
+    onSignal: {
         $: () => turnOnSignal,
         next: () => ({}),
-    }),
-    offSignal: on.offSignal({
+    },
+    offSignal: {
         $: () => turnOffSignal,
         next: () => ({}),
-    }),
+    },
     // Fires on entry to 'on' if temperature is already at or above the lower limit
-    atOrAboveLowerLimit: on.atOrAboveLowerLimit({
+    atOrAboveLowerLimit: {
         $: () => temperature$.pipe(filter((T) => T >= lowerLimitT)),
         next: () => ({}),
-    }),
+    },
     // Fires when temperature drops below the lower threshold, triggering heating
-    belowLowerLimit: on.belowLowerLimit({
+    belowLowerLimit: {
         $: () => temperature$.pipe(filter((T) => T < lowerLimitT)),
         next: () => ({}),
-    }),
+    },
     // Fires when temperature rises above the upper threshold, stopping heating
-    aboveUpperLimit: on.aboveUpperLimit({
+    aboveUpperLimit: {
         $: () => temperature$.pipe(filter((T) => T > upperLimitT)),
         next: () => ({}),
-    }),
-}));
+    },
+});
 
 const heater = Heater.close().start('on');
 const heaterState$ = heater.state$;

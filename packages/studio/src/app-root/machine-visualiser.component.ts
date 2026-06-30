@@ -68,36 +68,31 @@ const Heater = define({
         powerToOff: {from: 'power', to: 'off', on: 'offSignal.next'},
         idleToOff: {from: 'idle', to: 'off', on: 'offSignal.next'},
     })
-}).implement((on) => ({
-    onSignal: on.onSignal({
+}).implement({
+    onSignal: {
         $: () => turnOnSignal,
         next: () => ({}),
-        error: () => false // this should be optional?
-    }),
-    offSignal: on.offSignal({
+    },
+    offSignal: {
         $: () => turnOffSignal,
         next: () => ({}),
-        error: () => false // this should be optional?
-    }),
+    },
     // Fires on entry to 'on' if temperature is already at or above the lower limit
-    atOrAboveLowerLimit: on.atOrAboveLowerLimit({
+    atOrAboveLowerLimit: {
         $: () => temperature$.pipe(filter((T) => T >= lowerLimitT)),
         next: () => ({}),
-        error: () => false
-    }),
+    },
     // Fires when temperature drops below the lower threshold, triggering heating
-    belowLowerLimit: on.belowLowerLimit({
+    belowLowerLimit: {
         $: () => temperature$.pipe(filter((T) => T < lowerLimitT)),
         next: () => ({}),
-        error: () => false // this should be optional?
-    }),
+    },
     // Fires when temperature rises above the upper threshold, stopping heating
-    aboveUpperLimit: on.aboveUpperLimit({
+    aboveUpperLimit: {
         $: () => temperature$.pipe(filter((T) => T > upperLimitT)),
         next: () => ({}),
-        error: () => false // this should be optional?
-    }),
-}));
+    },
+});
 
 const heater = Heater.close().start('on');
 const heaterState$ = heater.state$;

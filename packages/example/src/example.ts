@@ -45,32 +45,32 @@ const Auth = define({
     retry: { from: 'loginFailed', to: 'loggedOut', on: 'retryLogin.next' },
     expire: { from: 'authenticated', to: 'loggedOut', on: 'sessionExpire.next' },
   }),
-}).implement(on => ({
+}).implement({
   // simulateLogin() can error for various reasons (server unreachable,
   // invalid credentials, account locked, rate limited), so authenticate
   // needs error edges in the graph to handle it. Without them the machine
   // would throw MachineUnhandledError.
-  authenticate: on.authenticate({
+  authenticate: {
     $: () => simulateLogin(),
     next: (result) => ({ token: result.token, authenticatedAt: Date.now() }),
     error: (err) => ({ reason: String(err) }),
-  }),
+  },
   // timer(2000) is a simple delay that cannot error or complete without
   // emission, so no error or complete edges are needed. If it did, the
   // machine would throw MachineUnhandledError or MachineCompletionError.
-  retryLogin: on.retryLogin({
+  retryLogin: {
     $: () => timer(2000),
     next: () => ({ since: Date.now() }),
-  }),
+  },
   // simulateSessionTimeout() is a simple timer that cannot error or
   // complete without emission, so no error or complete edges are needed.
   // If it did, the machine would throw MachineUnhandledError or
   // MachineCompletionError.
-  sessionExpire: on.sessionExpire({
+  sessionExpire: {
     $: () => simulateSessionTimeout(),
     next: (_result, _dest, source) => ({ since: source.authenticatedAt }),
-  }),
-}))
+  },
+})
 
 const Payment = define({
   nodes: {
@@ -84,17 +84,17 @@ const Payment = define({
     decline: { from: 'processing', to: 'declined', on: 'process.error' },
     stall: { from: 'processing', to: 'stalled', on: 'process.complete' },
   }),
-}).implement(on => ({
+}).implement({
   // simulatePayment() can emit (approved), error (declined), or complete
   // without emission (stalled). All three outcomes are handled by edges
   // in the graph, so next, error, and complete are all required.
-  process: on.process({
+  process: {
     $: () => simulatePayment(),
     next: (result) => ({ confirmedAt: Date.now(), txId: result.txId }),
     error: (err) => ({ reason: String(err) }),
     complete: (_result, _dest, source) => ({ orderId: source.orderId }),
-  }),
-}))
+  },
+})
 
 const Basket = define({
   nodes: {
@@ -115,34 +115,34 @@ const Basket = define({
     added: { from: 'addingItem', to: 'hasItems', on: 'itemAdded.next' },
     checkout: { from: 'hasItems', to: refs.payment.nodes.processing, on: 'checkout.next' },
   }),
-}).implement(on => ({
+}).implement({
   // simulateAddItem() can throw 'item out of stock', so addItem needs
   // error edges in the graph to handle it. Without them the machine
   // would throw MachineUnhandledError.
-  addItem: on.addItem({
+  addItem: {
     $: () => simulateAddItem(),
     next: (result, _dest, _source, edge) => ({ itemId: `${result.itemId}-via-${edge}` }),
     error: (err, dest, _source, edge) => ({ error: `${edge}: ${String(err)}`, items: dest.items }),
-  }),
+  },
   // simulateItemConfirmation() is a simple timer that cannot error or
   // complete without emission, so no error or complete edges are needed.
   // If it did, the machine would throw MachineUnhandledError or
   // MachineCompletionError.
-  itemAdded: on.itemAdded({
+  itemAdded: {
     $: () => simulateItemConfirmation(),
     next: (_result, dest, source) => ({ items: [...dest.items, source.itemId] }),
-  }),
+  },
   // checkout waits for auth to be authenticated before emitting. The
   // observable cannot error or complete, so no error or complete
   // edges are needed.
-  checkout: on.checkout({
+  checkout: {
     $: (deps) => timer(500).pipe(
       withLatestFrom(deps.auth.state$),
       filter(([_, auth]) => auth.node === 'authenticated'),
     ),
     next: (_result, _dest, _source, edge) => ({ orderId: `ORD-${Date.now()}-${edge}` }),
-  }),
-}))
+  },
+})
 
 // --- Runtime ---
 
@@ -244,9 +244,9 @@ const BasketBroken = define({
     // VIOLATION: 'refunded' does not exist in Payment
     checkout: { from: 'hasItems', to: refs.payment.nodes.refunded, on: 'addItem.next' },
   }),
-}).implement(on => ({
-  addItem: on.addItem({
+}).implement({
+  addItem: {
     $: () => new Observable(),
     next: (_result) => ({}),
-  }),
-}))
+  },
+})

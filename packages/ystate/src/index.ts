@@ -239,9 +239,9 @@ export interface IncidenceGraphSetMixin<
   TNodes extends Record<string, NodeData>,
   TEdges extends Record<string, EdgeDef<TNodes>>
 > extends IncidenceGraphSet<TNodes, TEdges> {
-  implement<TTransitions extends Record<TransitionNames<TEdges>, TransitionDef>>(
-    factory: (t: TransitionBuilders<TNodes, this['deps'], TEdges>) => TTransitions
-  ): IncidenceMachineMixin<TNodes, TEdges, TTransitions>
+  implement<TResultMap extends Record<TransitionNames<TEdges>, unknown>>(
+    transitions: TransitionInput<TNodes, this['deps'], TEdges, TResultMap>
+  ): IncidenceMachineMixin<TNodes, TEdges, TransitionInput<TNodes, this['deps'], TEdges, TResultMap>>
   close(): FibredGraph<TNodes, TEdges>
 }
 
@@ -694,27 +694,20 @@ export type TransitionShape<TNodes extends Record<string, NodeData>, TIncidenceM
 )
 
 /**
- * A builder function that accepts a `TransitionShape` and returns it
- * unchanged (identity pass-through for type inference of δⱼ).
+ * A mapped type over the distinct transition names in E = { eᵢ }.
+ * Each index j produces a `TransitionShape` parameterised by j and
+ * by `TResultMap[j]`, the emission type of δⱼ's environment
+ * Observable `$`. Reverse mapped type inference resolves `TResultMap`
+ * from the `$` return types, then flows each emission type into
+ * the `next`/`error`/`complete` handler signatures for δⱼ.
  *
  * @template TNodes - The node set [V = { vᵢ }].
  * @template TIncidenceMachines - A K-indexed family of dep IncidenceMachines [{ IMₖ }ₖ∈K].
  * @template TEdges - The incidence relation [E = { eᵢ }].
- * @template TOn - The transition name, indexing into [δ = { δⱼ }].
+ * @template TResultMap - A map from each transition name j to the emission type of δⱼ's environment Observable `$`.
  */
-export type TransitionBuilder<TNodes extends Record<string, NodeData>, TIncidenceMachines, TEdges, TOn extends string> =
-  <TResult>(def: TransitionShape<TNodes, TIncidenceMachines, TEdges, TOn, TResult>) => TransitionShape<TNodes, TIncidenceMachines, TEdges, TOn, TResult>
-
-/**
- * A mapping of transition names to their respective `TransitionBuilder`
- * functions, one per distinct name in the incidence relation [E = { eᵢ }].
- *
- * @template TNodes - The node set [V = { vᵢ }].
- * @template TIncidenceMachines - A K-indexed family of dep IncidenceMachines [{ IMₖ }ₖ∈K].
- * @template TEdges - The incidence relation [E = { eᵢ }].
- */
-export type TransitionBuilders<TNodes extends Record<string, NodeData>, TIncidenceMachines, TEdges> = {
-  [TrName in TransitionNames<TEdges>]: TransitionBuilder<TNodes, TIncidenceMachines, TEdges, TrName>
+export type TransitionInput<TNodes extends Record<string, NodeData>, TIncidenceMachines, TEdges, TResultMap extends Record<TransitionNames<TEdges>, unknown>> = {
+  [J in keyof TResultMap & TransitionNames<TEdges>]: TransitionShape<TNodes, TIncidenceMachines, TEdges, J, TResultMap[J]>
 }
 
 /**
@@ -774,15 +767,15 @@ export function define<
      * Equips the incidence graph with transition functions δ, producing
      * an `IncidenceMachine`. Each transition referenced by the edges must
      * be implemented with a `$` observable factory, a `next` handler, and
-     * an `error` handler.
+     * optionally `error` and `complete` handlers.
      *
-     * @param factory - A callback that receives `TransitionBuilders`
-     *   (one per transition name) and returns the transitions record.
+     * @param transitions - A record of transition implementations [δ = { δⱼ }],
+     *   one per distinct transition name in E = { eᵢ }.
      * @returns An `IncidenceMachine`: incidence graph + transitions + incidence machines.
      */
-    implement<TTransitions extends Record<TransitionNames<TEdges>, TransitionDef>>(
-      factory: (t: TransitionBuilders<TNodes, TDeps, TEdges>) => TTransitions
-    ): IncidenceMachine<TNodes, TEdges, TTransitions> & {
+    implement<TResultMap extends Record<TransitionNames<TEdges>, unknown>>(
+      transitions: TransitionInput<TNodes, TDeps, TEdges, TResultMap>
+    ): IncidenceMachine<TNodes, TEdges, TransitionInput<TNodes, TDeps, TEdges, TResultMap>> & {
       /**
        * Closes the incidence machine by validating all constituent graphs.
        * Delegates to `closeMachineSet`. See its docstring for the full
@@ -790,7 +783,7 @@ export function define<
        *
        * @returns A `MachineSet` with a `.start()` method for chaining.
        */
-      close(): MachineSet<TNodes, TEdges, TTransitions> & {
+      close(): MachineSet<TNodes, TEdges, TransitionInput<TNodes, TDeps, TEdges, TResultMap>> & {
         /**
          * Starts the machine set, traversing the root supergraph.
          * Delegates to `startMachineSet`. See its docstring for the
@@ -806,15 +799,10 @@ export function define<
           entry: Extract<keyof TNodes, string>,
           runningMachines?: Record<string, RunningMachine>,
           initialNodeData?: { [K in Extract<keyof TNodes, string>]?: Partial<Widen<TNodes[K]>> }
-        ): RunningMachineSet<TNodes, TEdges, TTransitions>
+        ): RunningMachineSet<TNodes, TEdges, TransitionInput<TNodes, TDeps, TEdges, TResultMap>>
       }
     } {
-      const builders = new Proxy({} as any, {
-        get(_, name) { return (transitionDef: any) => transitionDef }
-      })
-      const transitions = factory(builders)
-
-      const im: IncidenceMachine<TNodes, TEdges, TTransitions> = { nodes: incidenceGraphSet.nodes, edges: incidenceGraphSet.edges, transitions, deps: def.deps ?? {}, source: incidenceGraphSet }
+      const im: IncidenceMachine<TNodes, TEdges, TransitionInput<TNodes, TDeps, TEdges, TResultMap>> = { nodes: incidenceGraphSet.nodes, edges: incidenceGraphSet.edges, transitions, deps: def.deps ?? {}, source: incidenceGraphSet }
       return {
         ...im,
         close() {
