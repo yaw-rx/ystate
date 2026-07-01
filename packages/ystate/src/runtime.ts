@@ -1,4 +1,4 @@
-import { BehaviorSubject, Observable, Subject, filter, type Subscriber, type Subscription } from 'rxjs';
+import { BehaviorSubject, Observable, ReplaySubject, Subject, filter, type Subscription } from 'rxjs';
 import type { NodeData, EdgeDef, TransitionDef, HandlerDirection, NamespaceKind, Widen } from './graph.js';
 import { ROOT } from './graph.js';
 import type { MachineStatus, MachineSet, RunningMachine } from './machine.js';
@@ -134,23 +134,25 @@ machineSet: MachineSet<TNodes, TEdges, TTransitions>,
     return { name, handler }
   }
 
-  function enter(namespacedNode: string, data: NodeData, subscriber: Subscriber<{ node: string; data: NodeData }>) {
+  const stateSubject = new ReplaySubject<{ node: string; data: NodeData }>(1)
+
+  function enter(namespacedNode: string, data: NodeData) {
     current = { node: namespacedNode, data }
-    subscriber.next(current)
 
     const outgoing = Object.entries(rootGraph.edges).filter(([_, e]) => e.from === namespacedNode)
     if (outgoing.length === 0) {
+      stateSubject.next(current)
       status$.next('complete')
       edgeSubject.complete()
-      subscriber.complete()
+      stateSubject.complete()
       return
     }
-    listen(outgoing, subscriber)
+    listen(outgoing)
+    stateSubject.next(current)
   }
 
   function listen(
     outgoing: [string, EdgeDef][],
-    subscriber: Subscriber<{ node: string; data: NodeData }>
   ) {
     const grouped = new Map<string, { transitionName: string; namespace: string; edges: [string, EdgeDef, HandlerDirection][] }>()
 
@@ -179,7 +181,7 @@ machineSet: MachineSet<TNodes, TEdges, TTransitions>,
           const targetData = nodes[to]
           const newData = tr.next(value, targetData, current.data, edgeName) as NodeData
           edgeSubject.next({ edge: edgeName, from: edge.from, to })
-          enter(to, newData, subscriber)
+          enter(to, newData)
         },
         error: (err: unknown) => {
           const match = edges.find(([_, __, h]) => h === 'error')
@@ -188,7 +190,7 @@ machineSet: MachineSet<TNodes, TEdges, TTransitions>,
             status$.next('error')
             teardown()
             edgeSubject.error(wrapped)
-            subscriber.error(wrapped)
+            stateSubject.error(wrapped)
             return
           }
           const [edgeName, edge] = match
@@ -197,7 +199,7 @@ machineSet: MachineSet<TNodes, TEdges, TTransitions>,
           const targetData = nodes[to]
           const newData = tr.error(err, targetData, current.data, edgeName) as NodeData
           edgeSubject.next({ edge: edgeName, from: edge.from, to })
-          enter(to, newData, subscriber)
+          enter(to, newData)
         },
         complete: () => {
           const match = edges.find(([_, __, h]) => h === 'complete')
@@ -206,7 +208,7 @@ machineSet: MachineSet<TNodes, TEdges, TTransitions>,
             status$.next('error')
             teardown()
             edgeSubject.error(wrapped)
-            subscriber.error(wrapped)
+            stateSubject.error(wrapped)
             return
           }
           const [edgeName, edge] = match
@@ -215,31 +217,25 @@ machineSet: MachineSet<TNodes, TEdges, TTransitions>,
           const targetData = nodes[to]
           const newData = tr.complete(undefined, targetData, current.data, edgeName) as NodeData
           edgeSubject.next({ edge: edgeName, from: edge.from, to })
-          enter(to, newData, subscriber)
+          enter(to, newData)
         },
       })
       subs.push(sub)
     }
   }
 
-  const rootState$ = new Observable<{ node: string; data: NodeData }>((subscriber) => {
-    subscriber.next(current)
+  const outgoing = Object.entries(rootGraph.edges).filter(([_, e]) => e.from === entry)
+  if (outgoing.length === 0) {
+    stateSubject.next(current)
+    status$.next('complete')
+    edgeSubject.complete()
+    stateSubject.complete()
+  } else {
+    listen(outgoing)
+    stateSubject.next(current)
+  }
 
-    const outgoing = Object.entries(rootGraph.edges).filter(([_, e]) => e.from === entry)
-    if (outgoing.length === 0) {
-      status$.next('complete')
-      edgeSubject.complete()
-      subscriber.complete()
-    } else {
-      listen(outgoing, subscriber)
-    }
-
-    return () => {
-      teardown()
-      edgeSubject.complete()
-    }
-  })
-
+  const rootState$ = stateSubject.asObservable()
   const rootEvent$ = edgeSubject.asObservable()
 
   function withStatus$<T extends object>(obj: T): T & { status$: Observable<MachineStatus> } {
