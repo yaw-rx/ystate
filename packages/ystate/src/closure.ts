@@ -1,7 +1,7 @@
-import type { NodeData, EdgeDef, IncidenceGraph, IncidenceGraphSetCorrespondence, NamespaceKind, TransitionDef } from './graph.js';
-import { resolveRefs, unionGraphs, validateClosure, classifyDeps, namespaceFunctor, ROOT } from './graph.js';
-import type { IncidenceMachine, Machine, MachineSet, MachineCorrespondence, FlattenedIncidenceMachine } from './machine.js';
-import { flattenIncidenceMachines, buildMachineCorrespondence } from './machine.js';
+import type { NodeData, EdgeDef, IncidenceGraph, IncidenceGraphSetCorrespondence, IncidenceGraphSetClosureIssue, NamespaceKind, TransitionDef } from './graph.js';
+import { resolveRefs, unionGraphs, validateClosure, classifyDeps, namespaceFunctor, ROOT, HANDLER_DIRECTIONS, IncidenceGraphSetClosureError } from './graph.js';
+import type { IncidenceMachine, Machine, MachineSet, MachineCorrespondence, FlattenedIncidenceMachine, IncidenceMachineClosureIssue } from './machine.js';
+import { flattenIncidenceMachines, buildMachineCorrespondence, IncidenceMachineClosureError } from './machine.js';
 
 /**
  * Closes an open IncidenceGraph by resolving `DepNodeRef` targets,
@@ -13,15 +13,19 @@ import { flattenIncidenceMachines, buildMachineCorrespondence } from './machine.
  * 1. **Resolve** refs in E, replacing each `DepNodeRef` with fₖ(vₖ).
  * 2. **Union** into V' = V ∪ V₁' ∪ V₂' ∪ ..., E' = E ∪ E₁' ∪ E₂' ∪ ...
  * 3. **Validate** closure [E' ⊆ V' × V'].
+ * 4. **Validate** connectivity [|{Gᵢ}| = 1].
  *
- * The result is a closed IncidenceGraph where every edge endpoint
- * exists in V' and no `DepNodeRef`s remain.
+ * The result is a single connected graph where every edge endpoint
+ * exists in V' and all targets are concrete node names.
  *
  * @param graph - G = (V, E), the root IncidenceGraph, possibly open.
  * @param namespaceMap - M: K → NS, mapping dep keys to namespace prefixes.
  * @param subgraphs - { Gᵢ' = fᵢ(Gᵢ) }, the images of the namespaceFunctors.
  * @returns G' = (V', E'), the closed graph union.
- * @throws If closure fails [E' ⊄ V' × V'] or any `DepNodeRef` remains unresolved.
+ * @throws If any edge has an endpoint outside V'
+ *   [∃ e = (v₁, v₂) ∈ E' where v₁ ∉ V' or v₂ ∉ V'], if any edge
+ *   target is not a concrete node name [∃ e ∈ E' where target(e) ∉ V'],
+ *   or if the graph is not connected [|{Gᵢ}| > 1].
  */
 export function closeGraph<
   TNodes extends Record<string, NodeData>,
@@ -31,9 +35,13 @@ export function closeGraph<
   namespaceMap: Record<string, string>,
   subgraphs: IncidenceGraph<Record<string, NodeData>, Record<string, EdgeDef>>[]
 ): IncidenceGraph<Record<string, NodeData>, Record<string, EdgeDef>> {
-  const resolved = resolveRefs(graph, namespaceMap)
+  const { graph: resolved, issues: refIssues } = resolveRefs(graph, namespaceMap)
   const merged = unionGraphs(resolved, ...subgraphs)
-  validateClosure(merged)
+  const closureIssues = validateClosure(merged)
+  const allIssues: IncidenceGraphSetClosureIssue[] = [...refIssues, ...closureIssues]
+  if (allIssues.length > 0) {
+    throw new IncidenceGraphSetClosureError(allIssues)
+  }
   return merged
 }
 
@@ -51,14 +59,23 @@ export function closeGraph<
  *    fₖ: Gₖ → Gₖ' [injective graph homomorphism].
  * 4. **Close** the root graph via `closeGraph` with the images { Gₖ' }.
  * 5. **Correspondence** via `buildMachineCorrespondence`.
- * 6. **Close disjoint** machines recursively via `closeMachineSet`.
+ * 6. **Validate** that every edge's `on` field is well-formed
+ *    [`on = name.direction` where direction ∈ {next, error, complete}]
+ *    and references a transition that exists in the edge's namespace
+ *    [∀ e ∈ E', parse(on(e)) = (δⱼ, d) implies δⱼ ∈ δₙₛ(e)].
+ * 7. **Close disjoint** machines recursively via `closeMachineSet`.
  *
  * Every graph in the resulting set is independently closed
- * [E ⊆ V × V]. If any graph fails, the whole set fails.
+ * [E ⊆ V × V] and connected [|{Gᵢ}| = 1], and every edge
+ * references a valid transition [∀ e ∈ E', δⱼ ∈ δₙₛ(e)].
+ * If any graph or transition validation fails, the whole set fails.
  *
  * @param incidenceMachine - IM = (G, δ, { IMₖ }ₖ∈K), the IncidenceMachine to close.
  * @returns A `MachineSet` with closed graphs, machines, and correspondence.
- * @throws If any constituent graph fails closure [E ⊄ V × V].
+ * @throws `IncidenceGraphSetClosureError` if any constituent graph
+ *   fails closure [E ⊄ V × V] or is not connected [|{Gᵢ}| > 1].
+ * @throws `IncidenceMachineClosureError` if any edge has a malformed
+ *   `on` field or references a missing transition [δⱼ ∉ δₙₛ(e)].
  */
 export function closeMachineSet<
   TNodes extends Record<string, NodeData>,
@@ -85,6 +102,40 @@ export function closeMachineSet<
   const rootGraph = closeGraph(incidenceMachine, namespaceMap, subgraphs)
 
   const correspondence = buildMachineCorrespondence(incidenceMachine, incidenceMachine.transitions, namespacedEntries, unioned, disjoint)
+
+  const machineIssues: IncidenceMachineClosureIssue[] = []
+  const validDirections = new Set<string>(HANDLER_DIRECTIONS)
+  for (const [edgeName, edge] of Object.entries(rootGraph.edges)) {
+    const dotIdx = edge.on.indexOf('.')
+    if (dotIdx === -1 || !validDirections.has(edge.on.slice(dotIdx + 1))) {
+      machineIssues.push({ kind: 'malformed-edge-on', edge: edgeName, on: edge.on })
+      continue
+    }
+    const transitionName = edge.on.slice(0, dotIdx)
+    let ns = ROOT
+    for (const [namespace, mapping] of Object.entries(correspondence.preimage)) {
+      if (edgeName in mapping.edges) {
+        ns = namespace
+        break
+      }
+    }
+    const nsTransitions = correspondence.transitions[ns]
+    if (!nsTransitions) {
+      machineIssues.push({ kind: 'missing-namespace-transitions', edge: edgeName, namespace: ns, availableNamespaces: Object.keys(correspondence.transitions) })
+    } else if (!(transitionName in nsTransitions)) {
+      machineIssues.push({ kind: 'missing-transition', edge: edgeName, transition: transitionName, namespace: ns, availableTransitions: Object.keys(nsTransitions) })
+    } else {
+      const direction = edge.on.slice(dotIdx + 1)
+      const handler = nsTransitions[transitionName]
+      if (direction !== 'next' && !(direction in handler)) {
+        const availableHandlers = Object.keys(handler).filter(k => k !== '$')
+        machineIssues.push({ kind: 'missing-handler', edge: edgeName, transition: transitionName, direction, namespace: ns, availableHandlers })
+      }
+    }
+  }
+  if (machineIssues.length > 0) {
+    throw new IncidenceMachineClosureError(machineIssues)
+  }
 
   function computeF(graph: IncidenceGraph<Record<string, NodeData>, Record<string, EdgeDef>>): string[] {
     const sources = new Set(Object.values(graph.edges).map(e => e.from))

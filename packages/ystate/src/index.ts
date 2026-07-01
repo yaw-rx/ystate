@@ -2,16 +2,18 @@ export * from './graph.js';
 export * from './transitions.js';
 export * from './machine.js';
 export * from './closure.js';
+export * from './validation.js';
 export * from './runtime.js';
 
 import type { NodeData, EdgeDef, IncidenceGraphSet, FibredGraph, DepProxy } from './graph.js';
 import { defineDeps } from './graph.js';
-import type { IncidenceMachine, MachineSet, RunningMachine } from './machine.js';
+import type { IncidenceMachine, MachineSet, MachineSetValidationIssue, RunningMachine } from './machine.js';
 import type { TransitionNames, TransitionInput } from './transitions.js';
 import type { TransitionDef } from './graph.js';
 import type { Widen } from './graph.js';
 import type { RunningMachineSet } from './runtime.js';
 import { closeMachineSet } from './closure.js';
+import { validateMachineSet } from './validation.js';
 import { startMachineSet } from './runtime.js';
 
 // --- Mixin interfaces ---
@@ -63,8 +65,23 @@ export interface IncidenceMachineMixin<
 }
 
 /**
- * A MachineSet with a `start()` method that begins traversing the root
- * supergraph [G' = (V', E')], producing a `RunningMachineSet`.
+ * A closed MachineSet with method extensions for the post-closure
+ * pipeline. All graphs are closed [E ⊆ V × V], connected
+ * [|{Gᵢ}| = 1], and all edge-demanded handlers exist.
+ *
+ * - `validate()` checks handler coverage and transition usage
+ *   across all namespaces. Returns non-blocking diagnostic issues:
+ *   - `missing-handler`: transition δⱼ does not implement one or
+ *     more optional handlers [keys(δⱼ) \ {$, next} ⊂ {error, complete}].
+ *     If $ errors without an `error` handler, a
+ *     `MachineUnhandledError` is thrown. If $ completes without
+ *     emitting and no `complete` handler exists, a
+ *     `MachineCompletionError` is thrown.
+ *   - `unused-transition`: transition δⱼ is implemented but no
+ *     edge references it. Dead code (caught at compile time in
+ *     TypeScript but not in plain JavaScript).
+ * - `start()` begins traversing the root supergraph
+ *   [G' = (V', E')], producing a `RunningMachineSet`.
  *
  * @template TNodes - The node set [V = { vᵢ }] of the root IncidenceMachine.
  * @template TEdges - The incidence relation [E = { eᵢ }].
@@ -75,6 +92,7 @@ export interface MachineSetMixin<
   TEdges extends Record<string, EdgeDef<TNodes>> = Record<string, EdgeDef<TNodes>>,
   TTransitions extends Record<string, TransitionDef> = Record<string, TransitionDef>
 > extends MachineSet<TNodes, TEdges, TTransitions> {
+  validate(): MachineSetValidationIssue[]
   start(
     entry: Extract<keyof TNodes, string>,
     runningMachines?: Record<string, RunningMachine>,
@@ -132,11 +150,25 @@ export function define<
       /**
        * Closes the incidence machine by validating all constituent graphs.
        * Delegates to `closeMachineSet`. See its docstring for the full
-       * algorithm: classify, flatten, namespace, close, correspondence.
+       * algorithm: classify, flatten, namespace, close, correspondence,
+       * validate transitions.
        *
-       * @returns A `MachineSet` with a `.start()` method for chaining.
+       * @returns A `MachineSet` with `.validate()` and `.start()` methods.
        */
       close(): MachineSet<TNodes, TEdges, TransitionInput<TNodes, TDeps, TEdges, TResultMap>> & {
+        /**
+         * Checks handler coverage and transition usage across all
+         * namespaces. Delegates to `validateMachineSet`. Returns
+         * non-blocking diagnostic warnings: `missing-handler` for
+         * transitions [δⱼ] missing optional handlers (`error`,
+         * `complete`) whose absence would cause
+         * `MachineUnhandledError` or `MachineCompletionError` at
+         * runtime, and `unused-transition` for transitions [δⱼ]
+         * no edge references.
+         *
+         * @returns A list of `MachineSetValidationIssue`s (may be empty).
+         */
+        validate(): MachineSetValidationIssue[]
         /**
          * Starts the machine set, traversing the root supergraph.
          * Delegates to `startMachineSet`. See its docstring for the
@@ -162,6 +194,9 @@ export function define<
           const ms = closeMachineSet(im)
           return {
             ...ms,
+            validate() {
+              return validateMachineSet(ms)
+            },
             start(entry, runningMachines?, initialNodeData?) {
               return startMachineSet(ms, entry, runningMachines, initialNodeData)
             }

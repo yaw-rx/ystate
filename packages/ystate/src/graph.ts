@@ -254,6 +254,30 @@ export type IncidenceGraphSetClosureIssue =
   | { kind: 'namespace-collision'; namespace: string; node: string; existingNamespace: string }
   | { kind: 'multiple-graphs'; graphs: IncidenceGraph<Record<string, NodeData>, Record<string, EdgeDef>>[] }
 
+export function isGraphMissingDep(issue: IncidenceGraphSetClosureIssue): issue is Extract<IncidenceGraphSetClosureIssue, { kind: 'missing-dep' }> {
+  return issue.kind === 'missing-dep'
+}
+
+export function isGraphMissingDepNode(issue: IncidenceGraphSetClosureIssue): issue is Extract<IncidenceGraphSetClosureIssue, { kind: 'missing-dep-node' }> {
+  return issue.kind === 'missing-dep-node'
+}
+
+export function isGraphMissingTarget(issue: IncidenceGraphSetClosureIssue): issue is Extract<IncidenceGraphSetClosureIssue, { kind: 'missing-target' }> {
+  return issue.kind === 'missing-target'
+}
+
+export function isGraphMissingSource(issue: IncidenceGraphSetClosureIssue): issue is Extract<IncidenceGraphSetClosureIssue, { kind: 'missing-source' }> {
+  return issue.kind === 'missing-source'
+}
+
+export function isNamespaceCollision(issue: IncidenceGraphSetClosureIssue): issue is Extract<IncidenceGraphSetClosureIssue, { kind: 'namespace-collision' }> {
+  return issue.kind === 'namespace-collision'
+}
+
+export function isMultipleGraphs(issue: IncidenceGraphSetClosureIssue): issue is Extract<IncidenceGraphSetClosureIssue, { kind: 'multiple-graphs' }> {
+  return issue.kind === 'multiple-graphs'
+}
+
 /**
  * IncidenceGraphSet closure failed [E ⊄ V × V]. Thrown by
  * `IncidenceGraphSet.close()` and internally by `implement()`
@@ -389,11 +413,12 @@ export function unionGraphs(
  *
  * After resolution all edge targets are concrete names, but closure
  * (E' ⊆ V × V) may not yet hold. Apply `unionGraphs` to extend V
- * into V', then `validateClosure` to assert E' ⊆ V' × V'.
+ * into V', then `validateClosure` to check E' ⊆ V' × V'.
  *
  * @param graph - G = (V, E), the IncidenceGraph with possibly unresolved edges.
  * @param namespaceMap - M: K → NS, mapping dep keys to namespace prefixes.
- * @returns G' = (V, E') with all `DepNodeRef` targets replaced by namespaced names.
+ * @returns `{ graph, issues }` where graph is G' = (V, E') with resolved
+ *   targets, and issues contains any `missing-dep` violations found.
  */
 export function resolveRefs<
   TNodes extends Record<string, NodeData>,
@@ -401,7 +426,8 @@ export function resolveRefs<
 >(
   graph: IncidenceGraph<TNodes, TEdges>,
   namespaceMap: Record<string, string>
-): IncidenceGraph<Record<string, NodeData>, Record<string, EdgeDef>> {
+): { graph: IncidenceGraph<Record<string, NodeData>, Record<string, EdgeDef>>; issues: IncidenceGraphSetClosureIssue[] } {
+  const issues: IncidenceGraphSetClosureIssue[] = []
   const edges: Record<string, EdgeDef> = {}
   for (const [name, edge] of Object.entries(graph.edges)) {
     if (typeof edge.to === 'string') {
@@ -410,33 +436,96 @@ export function resolveRefs<
       const ref = edge.to as DepNodeRef
       const ns = namespaceMap[ref.dep]
       if (ns === undefined) {
-        throw new Error(`Unresolved dep reference: '${ref.dep}' in edge '${name}'`)
+        issues.push({ kind: 'missing-dep', edge: name, dep: ref.dep, availableDeps: Object.keys(namespaceMap) })
+      } else {
+        edges[name] = { from: edge.from, to: `${ns}.${ref.node}`, on: edge.on }
       }
-      edges[name] = { from: edge.from, to: `${ns}.${ref.node}`, on: edge.on }
     }
   }
-  return { nodes: graph.nodes, edges }
+  return { graph: { nodes: graph.nodes, edges }, issues }
 }
 
 /**
  * Validates the closure property of G = (V, E): every edge endpoint
- * must exist in V [E ⊆ V × V] and no `DepNodeRef` targets may remain.
+ * must exist in V [E ⊆ V × V], every edge target must be a concrete
+ * node name [∀ e ∈ E, target(e) ∈ V], and the graph must be connected
+ * [|{Gᵢ}| = 1 where {Gᵢ} is the set of maximal connected subgraphs
+ * of the underlying undirected graph of G].
  *
  * @param graph - G = (V, E), the IncidenceGraph to validate.
- * @throws If any edge has an endpoint outside V [∃ e = (v₁, v₂) ∈ E where v₁ ∉ V or v₂ ∉ V], or if any `DepNodeRef` is unresolved.
+ * @returns Any closure issues: endpoints outside V
+ *   [∃ e = (v₁, v₂) ∈ E where v₁ ∉ V or v₂ ∉ V], edge targets
+ *   that are not concrete node names [∃ e ∈ E where target(e) ∉ V],
+ *   or the graph not being connected [|{Gᵢ}| > 1].
  */
 export function validateClosure(
   graph: IncidenceGraph<Record<string, NodeData>, Record<string, EdgeDef>>
-): void {
+): IncidenceGraphSetClosureIssue[] {
+  const issues: IncidenceGraphSetClosureIssue[] = []
+  const availableNodes = Object.keys(graph.nodes)
+
   for (const [name, edge] of Object.entries(graph.edges)) {
     if (typeof edge.to !== 'string') {
       throw new Error(`Unresolved DepNodeRef in edge '${name}'`)
     }
     if (!(edge.from in graph.nodes)) {
-      throw new Error(`Edge '${name}' references unknown source node '${edge.from}'`)
+      issues.push({ kind: 'missing-source', edge: name, node: edge.from, namespace: '', availableNodes })
     }
-    if (!(edge.to in graph.nodes)) {
-      throw new Error(`Edge '${name}' references unknown target node '${edge.to}'`)
+    if (typeof edge.to === 'string' && !(edge.to in graph.nodes)) {
+      issues.push({ kind: 'missing-target', edge: name, node: edge.to, namespace: '', availableNodes })
     }
   }
+
+  if (issues.length > 0) return issues
+
+  const nodeNames = availableNodes
+  if (nodeNames.length <= 1) return issues
+
+  const adj: Record<string, Set<string>> = {}
+  for (const name of nodeNames) adj[name] = new Set()
+  for (const edge of Object.values(graph.edges)) {
+    adj[edge.from].add(edge.to as string)
+    adj[edge.to as string].add(edge.from)
+  }
+
+  const visited = new Set<string>()
+  const stack = [nodeNames[0]]
+  while (stack.length > 0) {
+    const node = stack.pop()!
+    if (visited.has(node)) continue
+    visited.add(node)
+    for (const neighbour of adj[node]) {
+      if (!visited.has(neighbour)) stack.push(neighbour)
+    }
+  }
+
+  if (visited.size === nodeNames.length) return issues
+
+  const graphs: IncidenceGraph<Record<string, NodeData>, Record<string, EdgeDef>>[] = []
+  const remaining = new Set(nodeNames)
+
+  for (const start of nodeNames) {
+    if (!remaining.has(start)) continue
+    const component = new Set<string>()
+    const s = [start]
+    while (s.length > 0) {
+      const node = s.pop()!
+      if (component.has(node)) continue
+      component.add(node)
+      remaining.delete(node)
+      for (const neighbour of adj[node]) {
+        if (!component.has(neighbour)) s.push(neighbour)
+      }
+    }
+    const nodes: Record<string, NodeData> = {}
+    for (const name of component) nodes[name] = graph.nodes[name]
+    const edges: Record<string, EdgeDef> = {}
+    for (const [name, edge] of Object.entries(graph.edges)) {
+      if (component.has(edge.from)) edges[name] = edge
+    }
+    graphs.push({ nodes, edges })
+  }
+
+  issues.push({ kind: 'multiple-graphs', graphs })
+  return issues
 }
