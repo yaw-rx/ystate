@@ -115,7 +115,7 @@ const Basket = define({
     added: { from: 'addingItem', to: 'hasItems', on: 'itemAdded.next' },
     checkout: { from: 'hasItems', to: refs.payment.nodes.processing, on: 'checkout.next' },
   }),
-}).implement({
+}).implement({  
   // simulateAddItem() can throw 'item out of stock', so addItem needs
   // error edges in the graph to handle it. Without them the machine
   // would throw MachineUnhandledError.
