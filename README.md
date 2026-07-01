@@ -124,7 +124,7 @@ YState uses a **data-on-node** model to realise this 5-tuple: each node v ∈ V 
 
 **IncidenceMachine.** Calling `.implement()` equips an IncidenceGraphSet with transition functions δ = { δⱼ }, producing an IncidenceMachine. The K-indexed family of dependencies is narrowed from IncidenceGraphSets to IncidenceMachines, so each Gk also carries its own δk. The graph may still be open; it has not been validated.
 
-**Closure.** Calling `.close()` on an IncidenceMachine transforms it into a validated MachineSet through a sequence of graph operations. First, the dep keys K are partitioned into **unioned** R ⊆ K (deps whose nodes are referenced by edges) and **disjoint** K \ R (deps with Vk ∩ V' = ∅, observed independently). For each unioned dep, a namespaceFunctor fk: Gk -> G' is applied: an injective graph homomorphism that maps Vk -> V' and Ek -> E' by prefix while preserving the incidence relation (V' = { ns.v | v ∈ Vk }, and for each edge e = (v₁, v₂) ∈ Ek, f(e) = (ns.v₁, ns.v₂) ∈ E'). The namespaced images { Gk' = fk(Gk) } are then unioned with the root graph into a single supergraph G' = (V', E') where V' = V ∪ V₁' ∪ V₂' ∪ ... and E' = E ∪ E₁' ∪ E₂' ∪ ... (the namespaceFunctor prefixing guarantees Vi ∩ Vj = ∅). Finally the closure property E' ⊆ V' × V' is validated: every edge endpoint must exist in V'. If any edge references a node outside V', `.close()` throws.
+**Closure.** Calling `.close()` on an IncidenceMachine transforms it into a validated MachineSet through graph closure and transition closure. First, the dependency keys K are partitioned into **unioned** R ⊆ K (dependencies whose nodes are referenced by edges) and **disjoint** K \ R (dependencies with Vk ∩ V' = ∅, observed independently). For each unioned dependency, a namespaceFunctor fk: Gk -> G' is applied: an injective graph homomorphism that maps Vk -> V' and Ek -> E' by prefix while preserving the incidence relation (V' = { ns.v | v ∈ Vk }, and for each edge e = (v₁, v₂) ∈ Ek, f(e) = (ns.v₁, ns.v₂) ∈ E'). The namespaced images { Gk' = fk(Gk) } are then unioned with the root graph into a single supergraph G' = (V', E') where V' = V ∪ V₁' ∪ V₂' ∪ ... and E' = E ∪ E₁' ∪ E₂' ∪ ... (the namespaceFunctor prefixing guarantees Vi ∩ Vj = ∅). Graph closure validates E' ⊆ V' × V': every edge endpoint must exist in V'. Transition closure validates that for every edge e ∈ E', the transition function δⱼ named by e exists in the corresponding namespace's δ, and that the direction d demanded by e is provided by δⱼ [d ∈ keys(δⱼ) \ {$}].
 
 **Correspondence.** Closure also produces the correspondence: the forward and inverse maps of the namespaceFunctors. Since each fk is injective, its inverse fk⁻¹ is well-defined on im(fk), and the fibres are singletons, giving a clean 1:1 map between local and global names in both directions. The **image** maps local names to their namespaced global names (fk: Vk -> V', Ek -> E'). The **preimage** maps global names back to local names (fk⁻¹: im(fk) -> Vk). The correspondence also records the unioned/disjoint classification of K and the transition lookup: δ indexed by namespace so the runtime can resolve which δⱼ handles a given edge via `transitions[ns][j]` without walking the composition tree.
 
@@ -132,7 +132,7 @@ YState uses a **data-on-node** model to realise this 5-tuple: each node v ∈ V 
 
 **Machine.** Each FibredGraph is then equipped with its transition functions δ and the terminal node set F = { v ∈ V | outdeg(v) = 0 }, producing a Machine: a single self-contained closed FSM carrying its own topology, fibres, implementations, and terminal set.
 
-**MachineSet.** The collection of all Machines (the root supergraph plus any disjoint machines, each independently closed) forms the MachineSet. The supergraph G' lives at the root namespace with kind `'unioned'`. Disjoint machines live at their namespace key with kind `'disjoint'`. Every constituent graph satisfies E ⊆ V × V. If any graph fails, the whole set fails.
+**MachineSet.** The collection of all Machines (the root supergraph plus any disjoint machines, each independently closed) forms the MachineSet. The supergraph G' lives at the root namespace with kind `'unioned'`. Disjoint machines live at their namespace key with kind `'disjoint'`. Every constituent graph satisfies E ⊆ V × V and δ is closed over E. If either closure fails, the whole set fails.
 
 **RunningMachineSet.** Calling `.start()` on a MachineSet begins traversal, producing a RunningMachineSet. q₀ is the entry node; initial data can be supplied for any node in V'. Disjoint machines must already be running and are passed in so `$` factories can observe them. The runtime provides `state$` (emits `{ node, data }` on each state change) and `event$` (emits `{ edge, from, to }` on each edge firing) over G' and each independent machine. Each RunningMachine carries a `status$` observable over `MachineStatus`: `'running'`, `'complete'`, or `'error'`.
 
@@ -263,9 +263,103 @@ const auth = Auth.close().start('loggedOut')
 
 ### Closing
 
-`.close()` takes an incidence machine and produces a `MachineSet`, a validated collection of closed finite state machines. For each referenced incidence machine, its nodes and edges are prefixed by key and merged into a single graph G' = (V', E'). Cross-machine references are resolved to their prefixed names. The closure property is then verified: every edge endpoint must exist in V' (E' ⊆ V' × V'). Incidence machines not referenced by any edge are validated as independent machines.
+`.close()` takes an incidence machine and produces a `MachineSet`. For each dependency declared in `deps` whose nodes are referenced by edges, nodes and edges are prefixed by key and merged into a single supergraph G' = (V', E'). Cross-machine references are resolved to their prefixed names. Dependencies listed in `deps` but not referenced by any edge are validated as independent machines.
 
-The result is a set of machines where every graph is closed. If any graph fails validation, `.close()` throws.
+Closure runs two passes. Graph closure validates the topology (E' ⊆ V' × V') and throws `IncidenceGraphSetClosureError` on failure:
+
+- `missing-dep`: an edge targets a dependency not declared in `deps`.
+- `missing-dep-node`: an edge targets a node that doesn't exist in the dependency declared in `deps`.
+- `missing-source`: an edge's `from` node doesn't exist in V'.
+- `missing-target`: an edge's `to` node doesn't exist in V'.
+- `namespace-collision`: two dependencies in `deps` produce the same prefixed node name.
+- `multiple-graphs`: V' decomposes into disconnected components.
+
+Transition closure validates that every edge is backed by an implemented transition, and throws `IncidenceMachineClosureError` on failure:
+
+- `missing-transition`: an edge names a transition with no implementation in its namespace.
+- `missing-handler`: an edge demands a handler direction (e.g. `error`) that the transition doesn't provide.
+- `malformed-edge-on`: the edge's `on` field doesn't match the `transition.direction` format.
+- `missing-namespace-transitions`: an edge belongs to a dependency namespace from `deps` that has no implemented transitions.
+
+Both error types carry an `issues` array with diagnostic context. Type guards (`isGraphMissingDep`, `isGraphMissingDepNode`, `isGraphMissingSource`, `isGraphMissingTarget`, `isNamespaceCollision`, `isMultipleGraphs`, `isClosureMissingTransition`, `isClosureMissingHandler`, `isMalformedEdgeOn`, `isMissingNamespaceTransitions`) narrow issues to their variant.
+
+```typescript
+try {
+  const authMachineSet = Auth.close()
+} catch (err) {
+  // Graph closure: topology violations (E' ⊆ V' × V')
+  if (err instanceof IncidenceGraphSetClosureError) {
+    console.error(err.message)
+
+    // Type guards narrow issues for programmatic handling.
+    // Each variant carries the fields needed to diagnose and respond.
+    for (const issue of err.issues) {
+      if (isGraphMissingDep(issue)) {
+        // A dependency referenced by an edge doesn't exist in deps.
+        // issue.dep is the missing key, issue.availableDeps lists what's in deps.
+        suggestDep(issue.edge, issue.dep, issue.availableDeps)
+      } else if (isGraphMissingDepNode(issue)) {
+        // A dependency declared in deps doesn't have the referenced node.
+        // issue.dep is the dependency key in deps, issue.node is the missing node.
+        suggestNode(issue.edge, issue.dep, issue.node, issue.availableNodes)
+      } else if (isGraphMissingSource(issue) || isGraphMissingTarget(issue)) {
+        // An edge's from or to node doesn't exist in V'.
+        // issue.node is the missing endpoint, issue.namespace identifies which graph.
+        suggestEndpoint(issue.edge, issue.node, issue.namespace, issue.availableNodes)
+      } else if (isNamespaceCollision(issue)) {
+        // Two dependencies in deps produce the same prefixed node name.
+        // issue.namespace and issue.existingNamespace identify the collision.
+        reportCollision(issue.node, issue.namespace, issue.existingNamespace)
+      } else if (isMultipleGraphs(issue)) {
+        // V' decomposes into disconnected components.
+        // issue.graphs contains each component as a separate IncidenceGraph.
+        reportDisconnected(issue.graphs)
+      }
+    }
+  }
+
+  // Transition closure: every edge must be backed by δⱼ
+  if (err instanceof IncidenceMachineClosureError) {
+    console.error(err.message)
+
+    for (const issue of err.issues) {
+      if (isClosureMissingTransition(issue)) {
+        // An edge names a transition with no implementation in its namespace.
+        // issue.transition is the missing name, issue.availableTransitions lists what exists.
+        suggestTransition(issue.edge, issue.transition, issue.namespace, issue.availableTransitions)
+      } else if (isClosureMissingHandler(issue)) {
+        // An edge demands a handler direction that the transition doesn't provide.
+        // issue.direction is the missing handler (e.g. 'error'), issue.availableHandlers lists what exists.
+        suggestHandler(issue.edge, issue.transition, issue.direction, issue.availableHandlers)
+      } else if (isMalformedEdgeOn(issue)) {
+        // The edge's on field doesn't match the 'transition.direction' format.
+        // issue.on is the malformed value.
+        reportMalformed(issue.edge, issue.on)
+      } else if (isMissingNamespaceTransitions(issue)) {
+        // An edge belongs to a dependency namespace from deps that has no transitions.
+        // issue.namespace is the empty namespace, issue.availableNamespaces lists what has transitions.
+        suggestNamespace(issue.edge, issue.namespace, issue.availableNamespaces)
+      }
+    }
+  }
+}
+```
+
+### Validating
+
+`.validate()` on a closed `MachineSet` returns non-blocking warnings. Closure errors are hard failures; validation warnings flag things that may need attention:
+
+- `missing-handler`: a transition implements `next` but not `error` or `complete`. Whether `$` will error or complete can't be determined statically: a timer won't error, an HTTP request might. If `$` errors at runtime without an error handler, a `MachineUnhandledError` is thrown. If `$` completes without emitting and no complete handler exists, a `MachineCompletionError` is thrown.
+- `unused-transition`: a transition is implemented but no edge references it. Dead code. TypeScript catches this at compile time via `TransitionNames<TEdges>`, but plain JavaScript won't see it until `.validate()`.
+
+Type guards `isMissingHandler` and `isUnusedTransition` narrow validation issues.
+
+```typescript
+const issues = authMachineSet.validate()
+for (const issue of issues.filter(isMissingHandler)) {
+  console.warn(`${issue.transition}: missing ${issue.handlers.join(', ')}`)
+}
+```
 
 ### Starting
 
