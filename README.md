@@ -197,14 +197,24 @@ Transitions themselves contain **no side effects**. Side effects happen when *yo
 An edge connects a source node to a target node via `on`, which names the transition and handler direction in a single field (e.g. `'process.next'`, `'process.error'`, or `'process.complete'`).  
 The type system uses the edge's `from`/`to` and the referenced transition to verify that the handler returns exactly the correct shape.
 
-Edges are defined as a function that receives typed refs from the dependencies (`deps`), so references to other machines' nodes are checked at compile time.
+Edges are defined as a plain record, or as a function over the dependency incidence machines { Gₖ }ₖ∈K when edges target nodes vₖ ∈ Vₖ outside V.
 
 ```typescript
 ...
-  edges: (refs) => ({
+  // Plain record when the graph is closed (E ⊆ V × V)
+  edges: {
     approve: { from: 'processing', to: 'approved',  on: 'process.next' },
     decline: { from: 'processing', to: 'declined',  on: 'process.error' },
     stall:   { from: 'processing', to: 'stalled',   on: 'process.complete' },
+  },
+```
+
+```typescript
+...
+  // Function when the graph is open (edges target nodes vₖ ∈ Vₖ in dependency incidence machines)
+  edges: (refs) => ({
+    addFromEmpty: { from: 'empty', to: 'addingItem', on: 'addItem.next' },
+    checkout:     { from: 'hasItems', to: refs.payment.nodes.processing, on: 'checkout.next' },
   }),
 ```
 
@@ -240,7 +250,7 @@ npm install @yaw-rx/ystate rxjs
 
 1. Define your **nodes**, each with a typed data shape.
 2. Optionally declare other incidence machines as dependencies via **`deps`**.
-3. Define your **edges** as a function, `(refs) => ({...})` with `from`, `to`, and `on`. This is the graph topology.
+3. Define your **edges** with `from`, `to`, and `on`. A plain record for closed graphs, or a function `(refs) => ({...})` when edges target nodes in dependency incidence machines. This is the graph topology.
 4. Chain `.implement({...})` to implement each transition, with full contextual typing derived from the graph.
 
 ## Runtime
@@ -431,7 +441,7 @@ const Heater = define({
         power: {},
         idle: {}
     },
-    edges: () => ({
+    edges: {
         turnOn: {from: 'off', to: 'on', on: 'onSignal.next'},
         onToPower: {from: 'on', to: 'power', on: 'belowLowerLimit.next'},
         onToIdle: {from: 'on', to: 'idle', on: 'atOrAboveLowerLimit.next'},
@@ -439,7 +449,7 @@ const Heater = define({
         idleToPower: {from: 'idle', to: 'power', on: 'belowLowerLimit.next'},
         powerToOff: {from: 'power', to: 'off', on: 'offSignal.next'},
         idleToOff: {from: 'idle', to: 'off', on: 'offSignal.next'},
-    })
+    }
 }).implement({
     onSignal: {
         $: () => turnOnSignal,
