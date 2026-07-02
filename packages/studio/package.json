@@ -14,6 +14,8 @@
   "main": "index.js",
   "scripts": {
     "prepare": "ts-patch install",
+    "dev": "vite",
+    "build": "rm -rf dist && vite build",
     "typecheck": "tsc --build",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
@@ -21,7 +23,7 @@
     "format:fix": "prettier --write src/"
   },
   "dependencies": {
-    "@yaw-rx/core": "^0.1.1",
+    "@yaw-rx/core": "^0.1.2",
     "rxjs": "8.0.0-alpha.14"
   },
   "devDependencies": {
