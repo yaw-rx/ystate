@@ -1,9 +1,14 @@
 import { defineConfig } from 'vite';
 import { viteTransform, viteAssets } from '@yaw-rx/vite';
+import { dtsBundlePlugin } from './plugins/vite-dts-bundle.js';
 
 export default defineConfig({
     root: '.',
-    plugins: [viteAssets(['.css', '.html', '.wgsl']), viteTransform()],
+    plugins: [
+        viteAssets(['.css', '.html', '.wgsl']),
+        viteTransform(),
+        dtsBundlePlugin({ packages: ['@yaw-rx/ystate', 'rxjs'] }),
+    ],
     esbuild: { target: 'es2022' },
     resolve: {
         dedupe: ['rxjs'],

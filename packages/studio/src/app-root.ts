@@ -54,27 +54,6 @@ export const Heater = define({
     powerToOff: { from: 'power', to: 'off', on: 'offSignal.next' },
     idleToOff: { from: 'idle', to: 'off', on: 'offSignal.next' },
   },
-}).implement({
-  onSignal: {
-    $: () => turnOnSignal,
-    next: () => ({}),
-  },
-  offSignal: {
-    $: () => turnOffSignal,
-    next: () => ({}),
-  },
-  atOrAboveLowerLimit: {
-    $: () => temperature$.pipe(filter((T) => T >= lowerLimitT)),
-    next: () => ({}),
-  },
-  belowLowerLimit: {
-    $: () => temperature$.pipe(filter((T) => T < lowerLimitT)),
-    next: () => ({}),
-  },
-  aboveUpperLimit: {
-    $: () => temperature$.pipe(filter((T) => T > upperLimitT)),
-    next: () => ({}),
-  },
 })`,
                 },
             ],
@@ -104,20 +83,6 @@ export const Auth = define({
     retry: { from: 'loginFailed', to: 'loggedOut', on: 'retryLogin.next' },
     expire: { from: 'authenticated', to: 'loggedOut', on: 'sessionExpire.next' },
   },
-}).implement({
-  authenticate: {
-    $: () => simulateLogin(),
-    next: (result) => ({ token: result.token, authenticatedAt: Date.now() }),
-    error: (err) => ({ reason: String(err) }),
-  },
-  retryLogin: {
-    $: () => timer(2000),
-    next: () => ({ since: Date.now() }),
-  },
-  sessionExpire: {
-    $: () => timer(10000),
-    next: (_result, _dest, source) => ({ since: source.authenticatedAt }),
-  },
 })`,
                 },
                 {
@@ -135,13 +100,6 @@ export const Payment = define({
     approve: { from: 'processing', to: 'approved', on: 'process.next' },
     decline: { from: 'processing', to: 'declined', on: 'process.error' },
     stall: { from: 'processing', to: 'stalled', on: 'process.complete' },
-  },
-}).implement({
-  process: {
-    $: () => simulatePayment(),
-    next: (result) => ({ confirmedAt: Date.now(), txId: result.txId }),
-    error: (err) => ({ reason: String(err) }),
-    complete: (_result, _dest, source) => ({ orderId: source.orderId }),
   },
 })`,
                 },
@@ -170,23 +128,6 @@ export const Basket = define({
     added: { from: 'addingItem', to: 'hasItems', on: 'itemAdded.next' },
     checkout: { from: 'hasItems', to: refs.payment.nodes.processing, on: 'checkout.next' },
   }),
-}).implement({
-  addItem: {
-    $: () => simulateAddItem(),
-    next: (result, _dest, _source, edge) => ({ itemId: result.itemId + '-via-' + edge }),
-    error: (err, dest, _source, edge) => ({ error: edge + ': ' + String(err), items: dest.items }),
-  },
-  itemAdded: {
-    $: () => timer(1000),
-    next: (_result, dest, source) => ({ items: [...dest.items, source.itemId] }),
-  },
-  checkout: {
-    $: (deps) => timer(500).pipe(
-      withLatestFrom(deps.auth.state$),
-      filter(([_, auth]) => auth.node === 'authenticated'),
-    ),
-    next: (_result, _dest, _source, edge) => ({ orderId: 'ORD-' + Date.now() + '-' + edge }),
-  },
 })`,
                 },
                 { name: 'form.html', content: '' },

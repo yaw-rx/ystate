@@ -2,14 +2,15 @@ import { Component, RxElement, state } from '@yaw-rx/core'
 import { RxFor } from '@yaw-rx/core/directives/rx-for'
 import * as monaco from 'monaco-editor'
 import type { Observable } from 'rxjs'
-import { map, distinctUntilChanged } from 'rxjs'
-import type { WorkspaceFile } from '../services/workspace.service.js'
+import { map, combineLatest, distinctUntilChanged } from 'rxjs'
+import type { Workspace, WorkspaceFile } from '../services/workspace.service.js'
+import dtsBundle from 'virtual:dts-bundle'
 
 @Component({
     selector: 'code-panel',
     directives: [RxFor],
     template: `
-        <div class="tabs" rx-for="file of files by name">
+        <div class="tabs" rx-for="file of activeFiles by name">
             <button
                 class="tab"
                 [class.active]="isActiveTab(file.name)"
@@ -60,15 +61,23 @@ import type { WorkspaceFile } from '../services/workspace.service.js'
     `,
 })
 export class CodePanel extends RxElement {
-    @state files: WorkspaceFile[] = []
+    @state library: Workspace[] = []
+    @state workspace = ''
     @state activeTab = ''
+    @state activeFiles: WorkspaceFile[] = []
 
     editorContainer!: HTMLDivElement
     private editor: monaco.editor.IStandaloneCodeEditor | null = null
     private models = new Map<string, monaco.editor.ITextModel>()
     private ro: ResizeObserver | undefined
+    private static tsConfigured = false
 
     override onRender(): void {
+        if (!CodePanel.tsConfigured) {
+            CodePanel.tsConfigured = true
+            CodePanel.configureTypeScript()
+        }
+
         this.editor = monaco.editor.create(this.editorContainer, {
             theme: 'vs-dark',
             language: 'typescript',
@@ -84,15 +93,20 @@ export class CodePanel extends RxElement {
         this.ro = new ResizeObserver(() => this.editor?.layout())
         this.ro.observe(this.editorContainer)
 
-        this.files$.subscribe(files => {
-            this.syncModels(files)
-            if (!this.activeTab && files.length > 0) {
-                this.activeTab = files[0].name
-            }
-        })
+        combineLatest([this.library$, this.workspace$]).subscribe(
+            ([library, workspace]) => {
+                this.rebuildModels(library)
+                const ws = library.find(w => w.name === workspace)
+                this.activeFiles = ws?.files ?? []
+                if (!this.activeTab && this.activeFiles.length > 0) {
+                    this.activeTab = this.activeFiles[0].name
+                }
+            },
+        )
 
         this.activeTab$.pipe(distinctUntilChanged()).subscribe((tab: string) => {
-            const model = this.models.get(tab)
+            const key = `${this.workspace}/${tab}`
+            const model = this.models.get(key)
             if (model && this.editor) this.editor.setModel(model)
         })
     }
@@ -113,28 +127,56 @@ export class CodePanel extends RxElement {
     }
 
     getContent(fileName: string): string | undefined {
-        return this.models.get(fileName)?.getValue()
+        const key = `${this.workspace}/${fileName}`
+        return this.models.get(key)?.getValue()
     }
 
-    private syncModels(files: WorkspaceFile[]): void {
-        const fileNames = new Set(files.map(f => f.name))
+    private rebuildModels(library: Workspace[]): void {
+        for (const model of this.models.values()) model.dispose()
+        this.models.clear()
 
-        for (const [name, model] of this.models) {
-            if (!fileNames.has(name)) {
-                model.dispose()
-                this.models.delete(name)
-            }
-        }
-
-        for (const file of files) {
-            if (!this.models.has(file.name)) {
-                const uri = monaco.Uri.parse(`file:///${file.name}`)
+        console.group('[code-panel] model registration')
+        for (const ws of library) {
+            for (const file of ws.files) {
+                const key = `${ws.name}/${file.name}`
+                const uri = monaco.Uri.parse(`file:///${key}`)
                 const lang = file.name.endsWith('.html') ? 'html'
                     : file.name.endsWith('.json') ? 'json'
                     : 'typescript'
                 const model = monaco.editor.createModel(file.content, lang, uri)
-                this.models.set(file.name, model)
+                this.models.set(key, model)
+                console.log(`model: ${uri.toString()} (${lang})`)
             }
         }
+        console.log(`${this.models.size} models total`)
+        console.groupEnd()
+    }
+
+    private static configureTypeScript(): void {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const tsLang = (monaco.languages as any).typescript
+        const defaults = tsLang.typescriptDefaults
+
+        defaults.setCompilerOptions({
+            target: 9 /* ES2022 */,
+            module: 199 /* NodeNext */,
+            moduleResolution: 99 /* NodeNext */,
+            strict: true,
+            esModuleInterop: true,
+            allowNonTsExtensions: true,
+        })
+
+        console.group('[code-panel] dts-bundle registration')
+        let count = 0
+        for (const [pkg, files] of Object.entries(dtsBundle)) {
+            const paths = Object.keys(files)
+            console.log(`${pkg}: ${paths.length} files`, paths.slice(0, 5))
+            for (const [path, content] of Object.entries(files)) {
+                defaults.addExtraLib(content, `file:///${path}`)
+                count++
+            }
+        }
+        console.log(`registered ${count} total .d.ts files`)
+        console.groupEnd()
     }
 }

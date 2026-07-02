@@ -1,7 +1,7 @@
 import { Component, Inject, RxElement, state } from '@yaw-rx/core'
 import { Router } from '@yaw-rx/core/router'
 import { type Observable, map, distinctUntilChanged } from 'rxjs'
-import { WorkspaceService, type WorkspaceFile } from '../services/workspace.service.js'
+import { WorkspaceService, type Workspace } from '../services/workspace.service.js'
 import { SandboxService } from '../services/sandbox.service.js'
 import { ElkLayoutService, type LayoutResult } from '../services/elk-layout.service.js'
 import '../components/graph-canvas.component.js'
@@ -12,7 +12,7 @@ import '../components/code-panel.component.js'
     template: `
         <graph-canvas class="canvas-area" [layout]="layoutResult"></graph-canvas>
         <div class="divider" onpointerdown="startResize"></div>
-        <code-panel class="code-area" [files]="workspaceFiles" [style.width]="codePanelWidthStyle"></code-panel>
+        <code-panel class="code-area" [library]="library" [workspace]="activeWorkspace" [style.width]="codePanelWidthStyle"></code-panel>
     `,
     styles: `
         :host {
@@ -46,7 +46,8 @@ export class WorkspacePage extends RxElement {
     @Inject(WorkspaceService) private readonly workspace!: WorkspaceService
 
     @state layoutResult: LayoutResult | null = null
-    @state workspaceFiles: WorkspaceFile[] = []
+    @state library: Workspace[] = []
+    @state activeWorkspace = ''
     @state codePanelWidth = 420
 
     get codePanelWidthStyle$(): Observable<string> {
@@ -92,7 +93,8 @@ export class WorkspacePage extends RxElement {
         const ws = this.workspace.getWorkspace(name)
         if (!ws) return
 
-        this.workspaceFiles = ws.files
+        this.library = this.workspace.library
+        this.activeWorkspace = name
 
         const conceptFiles = ws.files.filter(
             f => this.workspace.kindOf(f.name) === 'concept',
