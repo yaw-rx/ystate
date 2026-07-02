@@ -1,5 +1,6 @@
 import { Component, Inject, RxElement, state } from '@yaw-rx/core';
 import { type Observable, map } from 'rxjs';
+import { Router } from '@yaw-rx/core/router';
 import { RxFor } from '@yaw-rx/core/directives/rx-for';
 import { RxIf } from '@yaw-rx/core/directives/rx-if';
 import { WorkspaceService, type Workspace } from '../services/workspace.service.js';
@@ -164,6 +165,7 @@ import { WorkspaceService, type Workspace } from '../services/workspace.service.
 })
 export class SideBar extends RxElement {
     @Inject(WorkspaceService) private readonly workspace!: WorkspaceService;
+    @Inject(Router) private readonly router!: Router;
     @state expandedName = ''
     @state currentWorkspaceName = ''
     get hasCurrent$(): Observable<boolean> {
@@ -203,5 +205,6 @@ export class SideBar extends RxElement {
         if (!this.workspace.getWorkspace(name)) return;
         this.currentWorkspaceName = name;
         this.expandedName = '';
+        this.router.navigate('/workspace/' + name);
     }
 }
