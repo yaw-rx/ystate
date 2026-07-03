@@ -22,7 +22,7 @@ import type { OutputPanel } from './output-panel.component.js'
         </div>
         <div #editorContainer class="editor-container"></div>
         <div class="output-divider" onpointerdown="startOutputResize"></div>
-        <output-panel #outputPanel [sandboxResult]="sandboxResult"></output-panel>
+        <output-panel #outputPanel [sandboxResult]="sandboxResult" [expanded]="outputExpanded" [style.height]="outputPanelHeight"></output-panel>
     `,
     styles: `
         :host {
@@ -88,10 +88,10 @@ export class CodePanel extends RxElement {
     private editor: monaco.editor.IStandaloneCodeEditor | null = null
     private models = new Map<string, monaco.editor.ITextModel>()
     private modelDisposables: monaco.IDisposable[] = []
+    @state outputExpanded = false
+    @state outputHeight = 200
     private ro: ResizeObserver | undefined
     private debounceTimer: ReturnType<typeof setTimeout> | null = null
-    private outputExpanded = false
-    private outputHeight = 200
     private static tsConfigured = false
 
     override onRender(): void {
@@ -145,6 +145,12 @@ export class CodePanel extends RxElement {
         if (this.debounceTimer) clearTimeout(this.debounceTimer)
     }
 
+    get outputPanelHeight(): Observable<string> {
+        return combineLatest([this.outputExpanded$, this.outputHeight$]).pipe(
+            map(([exp, h]: [boolean, number]) => exp ? `${h}px` : ''),
+        )
+    }
+
     isActiveTab(name: string): Observable<boolean> {
         return this.activeTab$.pipe(map(t => t === name))
     }
@@ -158,12 +164,16 @@ export class CodePanel extends RxElement {
         return this.models.get(key)?.getValue()
     }
 
+    private layoutEditor(): void {
+        requestAnimationFrame(() => this.editor?.layout())
+    }
+
     private toggleOutput(): void {
         this.outputExpanded = !this.outputExpanded
         if (this.outputExpanded && this.outputHeight < 200) {
             this.outputHeight = 200
         }
-        this.applyOutputState()
+        this.layoutEditor()
     }
 
     startOutputResize(e: PointerEvent): void {
@@ -173,39 +183,25 @@ export class CodePanel extends RxElement {
         const wasCollapsed = !this.outputExpanded
         if (wasCollapsed) {
             this.outputExpanded = true
-            this.outputPanel.style.height = '28px'
-            this.outputPanel.expanded = true
+            this.outputHeight = 28
         }
         const startY = e.clientY
         const startH = wasCollapsed ? 28 : this.outputHeight
 
         const onMove = (ev: PointerEvent) => {
-            const h = Math.max(28, startH + (startY - ev.clientY))
-            this.outputHeight = h
-            this.outputPanel.style.height = `${h}px`
-            this.editor?.layout()
+            this.outputHeight = Math.max(28, startH + (startY - ev.clientY))
+            this.layoutEditor()
         }
         const onUp = () => {
             target.removeEventListener('pointermove', onMove)
             target.removeEventListener('pointerup', onUp)
             if (this.outputHeight <= 28) {
                 this.outputExpanded = false
-                this.applyOutputState()
             }
+            this.layoutEditor()
         }
         target.addEventListener('pointermove', onMove)
         target.addEventListener('pointerup', onUp)
-    }
-
-    private applyOutputState(): void {
-        if (this.outputExpanded) {
-            this.outputPanel.expanded = true
-            this.outputPanel.style.height = `${this.outputHeight}px`
-        } else {
-            this.outputPanel.expanded = false
-            this.outputPanel.style.height = ''
-        }
-        this.editor?.layout()
     }
 
     private scheduleContentChange(): void {

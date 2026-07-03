@@ -81,8 +81,11 @@ export class GraphCanvas extends RxElement {
     private pointers = new Map<number, { x: number; y: number }>()
     private lastPinchDist = 0
     private panStart: { x: number; y: number; tx: number; ty: number } | null = null
-    private preFullscreenVw = 0
-    private preFullscreenVh = 0
+    private preFullscreenScale = 0
+    private preFullscreenTx = 0
+    private preFullscreenTy = 0
+    private preFullscreenScreenX = 0
+    private preFullscreenScreenY = 0
 
     override onRender(): void {
         this.addEventListener('fullscreenchange', () => this.onFullscreenChange())
@@ -198,47 +201,32 @@ export class GraphCanvas extends RxElement {
         if (document.fullscreenElement) {
             document.exitFullscreen()
         } else {
-            this.preFullscreenVw = this.viewport.clientWidth
-            this.preFullscreenVh = this.viewport.clientHeight
+            const rect = this.getBoundingClientRect()
+            this.preFullscreenScale = this.viewScale
+            this.preFullscreenTx = this.viewTx
+            this.preFullscreenTy = this.viewTy
+            this.preFullscreenScreenX = window.screenX + rect.left
+            this.preFullscreenScreenY = window.screenY + rect.top
             this.requestFullscreen()
         }
     }
 
     private onFullscreenChange(): void {
-        const oldVw = this.preFullscreenVw
-        const oldVh = this.preFullscreenVh
-        if (oldVw === 0 || oldVh === 0) return
+        const entering = !!document.fullscreenElement
 
-        const ro = new ResizeObserver(() => {
-            ro.disconnect()
-            const newVw = this.viewport.clientWidth
-            const newVh = this.viewport.clientHeight
-            if (newVw === 0 || newVh === 0 || (newVw === oldVw && newVh === oldVh)) return
-
-            const contentLeft = this.viewTx
-            const contentTop = this.viewTy
-            const contentRight = oldVw - (this.viewTx + this.contentWidth * this.viewScale)
-            const contentBottom = oldVh - (this.viewTy + this.contentHeight * this.viewScale)
-
-            const minDistX = Math.min(contentLeft, contentRight)
-            const minDistY = Math.min(contentTop, contentBottom)
-            const minDist = Math.min(minDistX, minDistY)
-
-            const centerX = (oldVw / 2 - this.viewTx) / this.viewScale
-            const centerY = (oldVh / 2 - this.viewTy) / this.viewScale
-
-            const availW = newVw - minDist * 2
-            const availH = newVh - minDist * 2
-            const newScale = Math.min(availW / this.contentWidth, availH / this.contentHeight)
-
-            this.viewTx = newVw / 2 - centerX * newScale
-            this.viewTy = newVh / 2 - centerY * newScale
-            this.viewScale = newScale
-
-            this.preFullscreenVw = newVw
-            this.preFullscreenVh = newVh
-        })
-        ro.observe(this.viewport)
+        if (entering) {
+            // component moved on screen - offset so content stays at same screen position
+            // after fullscreen the component is at screen (window.screenX, window.screenY)
+            const dx = this.preFullscreenScreenX - window.screenX
+            const dy = this.preFullscreenScreenY - window.screenY
+            this.viewTx = this.viewTx + dx
+            this.viewTy = this.viewTy + dy
+            // TODO: add scale once center point is confirmed correct
+        } else {
+            this.viewScale = this.preFullscreenScale
+            this.viewTx = this.preFullscreenTx
+            this.viewTy = this.preFullscreenTy
+        }
     }
 
     private zoomAt(cx: number, cy: number, factor: number): void {

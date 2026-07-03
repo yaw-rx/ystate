@@ -3,7 +3,7 @@ import { type Observable, map } from 'rxjs';
 import { Router } from '@yaw-rx/core/router';
 import { RxFor } from '@yaw-rx/core/directives/rx-for';
 import { RxIf } from '@yaw-rx/core/directives/rx-if';
-import { WorkspaceService, type Workspace } from '../services/workspace.service.js';
+import { WorkspaceService, type Workspace, type WorkspaceFile } from '../services/workspace.service.js';
 
 @Component({
     selector: 'side-bar',
