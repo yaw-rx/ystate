@@ -1,4 +1,5 @@
-import type { NodeData, IncidenceGraphSetClosureIssue, IncidenceMachineClosureIssue } from '@yaw-rx/ystate'
+import type { NodeData, IncidenceGraphSetClosureIssue, IncidenceMachineClosureIssue, MachineSetValidationIssue } from '@yaw-rx/ystate'
+export type { MachineSetValidationIssue } from '@yaw-rx/ystate'
 
 // --- Shared types ---
 
@@ -19,7 +20,7 @@ export type GraphKind = 'graph-set' | 'machine'
 export type ClosureIssue = IncidenceGraphSetClosureIssue | IncidenceMachineClosureIssue
 
 export type ClosureResult =
-    | { success: true }
+    | { success: true; warnings: MachineSetValidationIssue[] }
     | { success: false; issues: ClosureIssue[] }
 
 export interface WorkspaceFile {

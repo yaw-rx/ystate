@@ -249,9 +249,9 @@ export interface IncidenceGraphSetCorrespondence extends Correspondence {
 export type IncidenceGraphSetClosureIssue =
   | { kind: 'missing-dep'; edge: string; dep: string; availableDeps: string[] }
   | { kind: 'missing-dep-node'; edge: string; dep: string; node: string; availableNodes: string[] }
-  | { kind: 'missing-target'; edge: string; node: string; namespace: string; availableNodes: string[] }
-  | { kind: 'missing-source'; edge: string; node: string; namespace: string; availableNodes: string[] }
-  | { kind: 'namespace-collision'; namespace: string; node: string; existingNamespace: string }
+  | { kind: 'missing-target'; edge: string; node: string; namespace: string; formattedNamespace: string; availableNodes: string[] }
+  | { kind: 'missing-source'; edge: string; node: string; namespace: string; formattedNamespace: string; availableNodes: string[] }
+  | { kind: 'namespace-collision'; namespace: string; formattedNamespace: string; node: string; existingNamespace: string; formattedExistingNamespace: string }
   | { kind: 'multiple-graphs'; graphs: IncidenceGraph<Record<string, NodeData>, Record<string, EdgeDef>>[] }
 
 export function isGraphMissingDep(issue: IncidenceGraphSetClosureIssue): issue is Extract<IncidenceGraphSetClosureIssue, { kind: 'missing-dep' }> {
@@ -469,10 +469,10 @@ export function validateClosure(
       throw new Error(`Unresolved DepNodeRef in edge '${name}'`)
     }
     if (!(edge.from in graph.nodes)) {
-      issues.push({ kind: 'missing-source', edge: name, node: edge.from, namespace: '', availableNodes })
+      issues.push({ kind: 'missing-source', edge: name, node: edge.from, namespace: '', formattedNamespace: 'ROOT', availableNodes })
     }
     if (typeof edge.to === 'string' && !(edge.to in graph.nodes)) {
-      issues.push({ kind: 'missing-target', edge: name, node: edge.to, namespace: '', availableNodes })
+      issues.push({ kind: 'missing-target', edge: name, node: edge.to, namespace: '', formattedNamespace: 'ROOT', availableNodes })
     }
   }
 

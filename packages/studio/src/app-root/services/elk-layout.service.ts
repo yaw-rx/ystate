@@ -173,9 +173,9 @@ export class ElkLayoutService {
     private groupLabel(graphKey: string): string {
         const sep = graphKey.indexOf(':')
         if (sep === -1) return graphKey
-        const machine = graphKey.slice(sep + 1)
+        const exportName = graphKey.slice(sep + 1)
         const file = graphKey.slice(0, sep).replace(/\.ts$/, '')
-        return `${machine} (${file})`
+        return `${file} (${exportName})`
     }
 
     private edgeLabelShape(edgeName: string, edge: SerializedEdge): ElkLabel {

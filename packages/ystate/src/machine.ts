@@ -59,10 +59,10 @@ export interface MachineCorrespondence extends IncidenceGraphSetCorrespondence {
  * transitions.
  */
 export type IncidenceMachineClosureIssue =
-  | { kind: 'missing-transition'; edge: string; transition: string; namespace: string; availableTransitions: string[] }
-  | { kind: 'missing-handler'; edge: string; transition: string; direction: string; namespace: string; availableHandlers: string[] }
+  | { kind: 'missing-transition'; edge: string; transition: string; namespace: string; formattedNamespace: string; availableTransitions: string[] }
+  | { kind: 'missing-handler'; edge: string; transition: string; direction: string; namespace: string; formattedNamespace: string; availableHandlers: string[] }
   | { kind: 'malformed-edge-on'; edge: string; on: string }
-  | { kind: 'missing-namespace-transitions'; edge: string; namespace: string; availableNamespaces: string[] }
+  | { kind: 'missing-namespace-transitions'; edge: string; namespace: string; formattedNamespace: string; availableNamespaces: string[] }
 
 export function isClosureMissingTransition(issue: IncidenceMachineClosureIssue): issue is Extract<IncidenceMachineClosureIssue, { kind: 'missing-transition' }> {
   return issue.kind === 'missing-transition'
@@ -100,8 +100,8 @@ export function isMissingNamespaceTransitions(issue: IncidenceMachineClosureIssu
  *   `TransitionNames<TEdges>`, but not in plain JavaScript.
  */
 export type MachineSetValidationIssue =
-  | { kind: 'missing-handler'; transition: string; namespace: string; handlers: string[] }
-  | { kind: 'unused-transition'; transition: string; namespace: string }
+  | { kind: 'missing-handler'; transition: string; namespace: string; formattedNamespace: string; handlers: string[] }
+  | { kind: 'unused-transition'; transition: string; namespace: string; formattedNamespace: string }
 
 export function isMissingHandler(issue: MachineSetValidationIssue): issue is Extract<MachineSetValidationIssue, { kind: 'missing-handler' }> {
   return issue.kind === 'missing-handler'

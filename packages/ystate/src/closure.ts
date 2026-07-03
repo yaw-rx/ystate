@@ -218,17 +218,18 @@ export function closeMachineSet<
         break
       }
     }
+    const formattedNs = ns === '' ? 'ROOT' : `'${ns}'`
     const nsTransitions = correspondence.transitions[ns]
     if (!nsTransitions) {
-      machineIssues.push({ kind: 'missing-namespace-transitions', edge: edgeName, namespace: ns, availableNamespaces: Object.keys(correspondence.transitions) })
+      machineIssues.push({ kind: 'missing-namespace-transitions', edge: edgeName, namespace: ns, formattedNamespace: formattedNs, availableNamespaces: Object.keys(correspondence.transitions) })
     } else if (!(transitionName in nsTransitions)) {
-      machineIssues.push({ kind: 'missing-transition', edge: edgeName, transition: transitionName, namespace: ns, availableTransitions: Object.keys(nsTransitions) })
+      machineIssues.push({ kind: 'missing-transition', edge: edgeName, transition: transitionName, namespace: ns, formattedNamespace: formattedNs, availableTransitions: Object.keys(nsTransitions) })
     } else {
       const direction = edge.on.slice(dotIdx + 1)
       const handler = nsTransitions[transitionName]
       if (direction !== 'next' && !(direction in handler)) {
         const availableHandlers = Object.keys(handler).filter(k => k !== '$')
-        machineIssues.push({ kind: 'missing-handler', edge: edgeName, transition: transitionName, direction, namespace: ns, availableHandlers })
+        machineIssues.push({ kind: 'missing-handler', edge: edgeName, transition: transitionName, direction, namespace: ns, formattedNamespace: formattedNs, availableHandlers })
       }
     }
   }

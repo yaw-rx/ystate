@@ -41,6 +41,7 @@ export function validateMachineSet<
   const issues: MachineSetValidationIssue[] = []
 
   for (const [ns, transitions] of Object.entries(machineSet.correspondence.transitions)) {
+    const formattedNamespace = ns === '' ? 'ROOT' : `'${ns}'`
     const machine = machineSet.machines[ns]
     const referencedTransitions = new Set<string>()
     if (machine) {
@@ -57,10 +58,10 @@ export function validateMachineSet<
       if (!('error' in def)) missing.push('error')
       if (!('complete' in def)) missing.push('complete')
       if (missing.length > 0) {
-        issues.push({ kind: 'missing-handler', transition: name, namespace: ns, handlers: missing })
+        issues.push({ kind: 'missing-handler', transition: name, namespace: ns, formattedNamespace, handlers: missing })
       }
       if (!referencedTransitions.has(name)) {
-        issues.push({ kind: 'unused-transition', transition: name, namespace: ns })
+        issues.push({ kind: 'unused-transition', transition: name, namespace: ns, formattedNamespace })
       }
     }
   }

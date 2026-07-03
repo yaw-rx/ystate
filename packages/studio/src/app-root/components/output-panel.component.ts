@@ -1,5 +1,5 @@
 import { Component, RxElement, state } from '@yaw-rx/core'
-import type { SandboxResult, ClosureResult, ClosureIssue } from '../services/sandbox.service.js'
+import type { SandboxResult, ClosureResult, ClosureIssue, MachineSetValidationIssue } from '../services/sandbox.service.js'
 
 interface OutputEntry {
     key: string
@@ -13,7 +13,9 @@ interface OutputEntry {
     template: `
         <div class="status-bar">
             <span #statusText class="status"></span>
-            <button #toggleBtn class="toggle" onclick="onToggle">&#9650;</button>
+            <button #toggleBtn class="toggle" onclick="onToggle">
+                <span class="toggle-icon">&#9650;</span>
+            </button>
         </div>
         <div #details class="details"></div>
     `,
@@ -29,47 +31,62 @@ interface OutputEntry {
             display: flex;
             align-items: center;
             height: 28px;
-            padding: 0 12px;
             font-family: var(--font-mono);
             font-size: 0.75rem;
             flex-shrink: 0;
         }
         .status {
             flex: 1;
+            color: #888;
+            padding: 0 12px;
         }
         .toggle {
             background: none;
             border: none;
+            border-left: 1px solid var(--border);
             color: var(--dim);
             cursor: pointer;
-            font-size: 0.55rem;
-            padding: 2px 4px;
-            transition: transform 0.15s;
+            padding: 0 8px;
+            margin-left: 8px;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            transition: background 0.1s, color 0.1s;
             flex-shrink: 0;
         }
         .toggle:hover {
             color: var(--text);
+            background: var(--bg-4);
         }
-        .toggle.expanded {
+        .toggle-icon {
+            font-size: 0.7rem;
+            transition: transform 0.15s;
+            display: inline-block;
+        }
+        .toggle.expanded .toggle-icon {
             transform: rotate(180deg);
         }
         .details {
             overflow: auto;
             font-family: var(--font-mono);
             font-size: 0.75rem;
-            line-height: 1.6;
-            padding: 0 12px;
+            line-height: 1.8;
+            padding: 4px 12px;
             flex: 1;
         }
-        .entry-header {
-            padding: 4px 0;
-            font-weight: bold;
+        .entry {
+            padding-left: 12px;
         }
-        .entry-header.success { color: #5b5; }
-        .entry-header.failure { color: #c55; }
+        .entry.success { color: #5b5; }
+        .entry.failure { color: #c55; }
         .issue {
             color: #c55;
-            padding-left: 16px;
+            padding-left: 24px;
+            white-space: pre-wrap;
+        }
+        .warning {
+            color: #da0;
+            padding-left: 12px;
             white-space: pre-wrap;
         }
     `,
@@ -103,7 +120,6 @@ export class OutputPanel extends RxElement {
 
         if (!result) {
             this.statusText.textContent = ''
-            this.statusText.style.color = ''
             return
         }
 
@@ -119,40 +135,53 @@ export class OutputPanel extends RxElement {
 
         const entries = this.buildEntries(result.closureResults)
         const failures = entries.filter(e => !e.success)
+        const allWarnings = entries.flatMap(e => {
+            const cr = result.closureResults[e.key]
+            return cr.success ? cr.warnings : []
+        })
 
         if (failures.length === 0) {
+            this.statusText.style.color = '#5b5'
             const machines = entries.filter(e => result.graphKinds[e.key] === 'machine').length
             const graphs = entries.length - machines
             const parts: string[] = []
             if (machines > 0) parts.push(`${machines} machine${machines !== 1 ? 's' : ''} closed`)
             if (graphs > 0) parts.push(`${graphs} graph${graphs !== 1 ? 's' : ''} closed`)
-            this.statusText.textContent = `✓ ${parts.join(', ')}`
-            this.statusText.style.color = '#5b5'
+            const suffix = allWarnings.length > 0 ? ' with warnings' : ''
+            this.statusText.textContent = `✓ ${parts.join(', ')}${suffix}`
         } else {
+            this.statusText.style.color = '#c55'
             const n = failures.reduce((sum, e) => sum + e.issues.length, 0)
             this.statusText.textContent = `✗ ${n} closure issue${n !== 1 ? 's' : ''}`
-            this.statusText.style.color = '#c55'
         }
 
         for (const entry of entries) {
-            const header = document.createElement('div')
-            header.className = `entry-header ${entry.success ? 'success' : 'failure'}`
-            header.textContent = `${entry.success ? '✓' : '✗'} ${entry.label}`
-            this.details.appendChild(header)
+            const div = document.createElement('div')
+            div.className = `entry ${entry.success ? 'success' : 'failure'}`
+            const kind = entry.success ? 'closed' : 'failed'
+            div.textContent = `${entry.success ? '✓' : '✗'} ${entry.label} ${kind}`
+            this.details.appendChild(div)
 
             for (const issue of entry.issues) {
-                const div = document.createElement('div')
-                div.className = 'issue'
-                div.textContent = this.formatIssue(issue)
-                this.details.appendChild(div)
+                const issueDiv = document.createElement('div')
+                issueDiv.className = 'issue'
+                issueDiv.textContent = `· ${this.formatIssue(issue)}`
+                this.details.appendChild(issueDiv)
             }
+        }
+
+        for (const warning of allWarnings) {
+            const div = document.createElement('div')
+            div.className = 'warning'
+            div.textContent = `· ${this.formatWarning(warning)}`
+            this.details.appendChild(div)
         }
     }
 
     private buildEntries(results: Record<string, ClosureResult>): OutputEntry[] {
         return Object.entries(results).map(([key, result]) => {
             const sep = key.indexOf(':')
-            const label = sep === -1 ? key : `${key.slice(sep + 1)} (${key.slice(0, sep).replace(/\.ts$/, '')})`
+            const label = sep === -1 ? key : `${key.slice(0, sep).replace(/\.ts$/, '')} (${key.slice(sep + 1)})`
             return {
                 key,
                 label,
@@ -165,25 +194,34 @@ export class OutputPanel extends RxElement {
     private formatIssue(issue: ClosureIssue): string {
         switch (issue.kind) {
             case 'missing-dep':
-                return `edge '${issue.edge}': dep '${issue.dep}' not in K. Available: {${issue.availableDeps.join(', ')}}`
+                return `Edge '${issue.edge}': dep '${issue.dep}' not in K. Available: {${issue.availableDeps.join(', ')}}`
             case 'missing-dep-node':
-                return `edge '${issue.edge}': node '${issue.node}' not in dep '${issue.dep}'. Available: {${issue.availableNodes.join(', ')}}`
+                return `Edge '${issue.edge}': node '${issue.node}' not in dep '${issue.dep}'. Available: {${issue.availableNodes.join(', ')}}`
             case 'missing-target':
-                return `edge '${issue.edge}': target '${issue.node}' not in V'. Available: {${issue.availableNodes.join(', ')}}`
+                return `Edge '${issue.edge}': target '${issue.node}' not in V' at ${issue.formattedNamespace}. Available: {${issue.availableNodes.join(', ')}}`
             case 'missing-source':
-                return `edge '${issue.edge}': source '${issue.node}' not in V. Available: {${issue.availableNodes.join(', ')}}`
+                return `Edge '${issue.edge}': source '${issue.node}' not in V at ${issue.formattedNamespace}. Available: {${issue.availableNodes.join(', ')}}`
             case 'namespace-collision':
-                return `namespaceFunctor collision: node '${issue.node}' in '${issue.namespace}' already from '${issue.existingNamespace}'`
+                return `Namespace collision: node '${issue.node}' in ${issue.formattedNamespace} already from ${issue.formattedExistingNamespace}`
             case 'multiple-graphs':
-                return `closure produced ${issue.graphs.length} disjoint graphs instead of 1`
+                return `Closure produced ${issue.graphs.length} disjoint graphs instead of 1`
             case 'missing-transition':
-                return `edge '${issue.edge}': transition '${issue.transition}' not in δ at namespace '${issue.namespace}'`
+                return `Edge '${issue.edge}': transition '${issue.transition}' not in δ at ${issue.formattedNamespace}`
             case 'missing-handler':
-                return `edge '${issue.edge}': transition '${issue.transition}' missing '${issue.direction}' handler at '${issue.namespace}'`
+                return `Edge '${issue.edge}': transition '${issue.transition}' missing '${issue.direction}' handler at ${issue.formattedNamespace}`
             case 'malformed-edge-on':
-                return `edge '${issue.edge}': malformed on field '${issue.on}'`
+                return `Edge '${issue.edge}': malformed on field '${issue.on}'`
             case 'missing-namespace-transitions':
-                return `edge '${issue.edge}': no transitions at namespace '${issue.namespace}'`
+                return `Edge '${issue.edge}': no transitions at ${issue.formattedNamespace}`
+        }
+    }
+
+    private formatWarning(warning: MachineSetValidationIssue): string {
+        switch (warning.kind) {
+            case 'missing-handler':
+                return `Transition '${warning.transition}' at ${warning.formattedNamespace} missing optional handlers: {${warning.handlers.join(', ')}}`
+            case 'unused-transition':
+                return `Transition '${warning.transition}' at ${warning.formattedNamespace} is implemented but no edge references it`
         }
     }
 }

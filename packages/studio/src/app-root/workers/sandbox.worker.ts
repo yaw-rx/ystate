@@ -240,8 +240,9 @@ function handleClose(key: string): ClosureResult {
         throw new Error(`Export '${key}' has no close() method`)
     }
     try {
-        ;(value as any).close()
-        return { success: true }
+        const closed = (value as any).close()
+        const warnings = typeof closed.validate === 'function' ? closed.validate() : []
+        return { success: true, warnings }
     } catch (e) {
         if (e instanceof IncidenceGraphSetClosureError) {
             return { success: false, issues: e.issues }
