@@ -23,18 +23,19 @@ function measureText(svg: SVGSVGElement, text: string, fontSize: number, italic 
 
 @Component({
     selector: 'graph-canvas',
-    template: `<div #viewport></div>`,
+    template: `<div #viewport onwheel="onWheel($event)" onpointerdown="onPointerDown($event)" onpointermove="onPointerMove($event)" onpointerup="onPointerUp($event)" onpointercancel="onPointerUp($event)"></div>`,
     styles: `
         :host {
             display: block;
             width: 100%;
             height: 100%;
-            overflow: auto;
+            overflow: hidden;
             background: var(--bg-3);
         }
         div {
-            min-width: 100%;
-            min-height: 100%;
+            width: 100%;
+            height: 100%;
+            touch-action: none;
         }
     `,
 })
@@ -43,12 +44,28 @@ export class GraphCanvas extends RxElement {
     @state closureResults: Record<string, ClosureResult> = {}
     @state graphKinds: Record<string, GraphKind> = {}
     @state transitionKeys: Record<string, string[]> = {}
+    @state viewScale = 1
+    @state viewTx = 0
+    @state viewTy = 0
     viewport!: HTMLDivElement
     private svg: SVGSVGElement | null = null
+    private contentGroup: SVGGElement | null = null
+    private hasUserView = false
+    private contentWidth = 0
+    private contentHeight = 0
+    private pointers = new Map<number, { x: number; y: number }>()
+    private lastPinchDist = 0
+    private panStart: { x: number; y: number; tx: number; ty: number } | null = null
+
 
     override onRender(): void {
         combineLatest([this.layout$, this.closureResults$, this.graphKinds$, this.transitionKeys$]).subscribe(
             ([layout, closureResults, graphKinds, transitionKeys]) => this.render(layout, closureResults, graphKinds, transitionKeys),
+        )
+        combineLatest([this.viewScale$, this.viewTx$, this.viewTy$]).subscribe(
+            ([s, tx, ty]) => {
+                if (this.contentGroup) this.contentGroup.setAttribute('transform', `translate(${tx},${ty}) scale(${s})`)
+            },
         )
     }
 
@@ -61,29 +78,100 @@ export class GraphCanvas extends RxElement {
         if (this.svg) {
             this.svg.remove()
             this.svg = null
+            this.contentGroup = null
         }
         if (!layout || layout.nodes.length === 0) return
 
-        const pad = 60
-        const w = layout.width + pad * 2
-        const h = layout.height + pad * 2
+        this.contentWidth = layout.width
+        this.contentHeight = layout.height
 
         const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
-        svg.setAttribute('width', String(w))
-        svg.setAttribute('height', String(h))
-        svg.setAttribute('viewBox', `${-pad} ${-pad} ${w} ${h}`)
+        svg.setAttribute('width', '100%')
+        svg.setAttribute('height', '100%')
         svg.style.display = 'block'
+
+        const g = document.createElementNS('http://www.w3.org/2000/svg', 'g')
+        this.contentGroup = g
 
         this.viewport.appendChild(svg)
         this.svg = svg
 
-        this.appendDefs(svg)
-        for (const group of layout.groups) this.appendGroup(svg, group, closureResults, graphKinds)
-        for (const edge of layout.edges) this.appendEdge(svg, edge, layout, graphKinds, transitionKeys)
-        for (const node of layout.nodes) this.appendNode(svg, node)
+        this.appendDefs(g)
+        for (const group of layout.groups) this.appendGroup(g, group, closureResults, graphKinds)
+        for (const edge of layout.edges) this.appendEdge(g, edge, layout, graphKinds, transitionKeys)
+        for (const node of layout.nodes) this.appendNode(g, node)
+
+        svg.appendChild(g)
+        if (this.hasUserView) {
+            this.contentGroup.setAttribute('transform', `translate(${this.viewTx},${this.viewTy}) scale(${this.viewScale})`)
+        } else {
+            this.fitToViewport()
+        }
     }
 
-    private appendDefs(svg: SVGSVGElement): void {
+    private fitToViewport(): void {
+        if (!this.svg || !this.contentGroup) return
+        const vw = this.viewport.clientWidth
+        const vh = this.viewport.clientHeight
+        if (vw === 0 || vh === 0) return
+        const margin = 40
+        this.viewScale = Math.min((vw - margin * 2) / this.contentWidth, (vh - margin * 2) / this.contentHeight, 1)
+        this.viewTx = (vw - this.contentWidth * this.viewScale) / 2
+        this.viewTy = (vh - this.contentHeight * this.viewScale) / 2
+    }
+
+    onWheel(e: WheelEvent): void {
+        e.preventDefault()
+        const factor = Math.pow(0.995, e.deltaY)
+        this.zoomAt(e.offsetX, e.offsetY, factor)
+    }
+
+    onPointerDown(e: PointerEvent): void {
+        this.viewport.setPointerCapture(e.pointerId)
+        this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+        if (this.pointers.size === 1) {
+            this.panStart = { x: e.clientX, y: e.clientY, tx: this.viewTx, ty: this.viewTy }
+        } else if (this.pointers.size === 2) {
+            this.panStart = null
+            const [a, b] = [...this.pointers.values()]
+            this.lastPinchDist = Math.hypot(b.x - a.x, b.y - a.y)
+        }
+    }
+
+    onPointerMove(e: PointerEvent): void {
+        if (!this.pointers.has(e.pointerId)) return
+        this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+
+        if (this.pointers.size === 1 && this.panStart) {
+            this.hasUserView = true
+            this.viewTx = this.panStart.tx + (e.clientX - this.panStart.x)
+            this.viewTy = this.panStart.ty + (e.clientY - this.panStart.y)
+        } else if (this.pointers.size === 2) {
+            const [a, b] = [...this.pointers.values()]
+            const dist = Math.hypot(b.x - a.x, b.y - a.y)
+            const cx = (a.x + b.x) / 2
+            const cy = (a.y + b.y) / 2
+            const rect = this.viewport.getBoundingClientRect()
+            this.zoomAt(cx - rect.left, cy - rect.top, dist / this.lastPinchDist)
+            this.lastPinchDist = dist
+        }
+    }
+
+    onPointerUp(e: PointerEvent): void {
+        this.pointers.delete(e.pointerId)
+        if (this.pointers.size === 0) this.panStart = null
+    }
+
+    private zoomAt(cx: number, cy: number, factor: number): void {
+        this.hasUserView = true
+        const newScale = Math.min(Math.max(this.viewScale * factor, 0.1), 5)
+        const ratio = newScale / this.viewScale
+        this.viewTx = cx - ratio * (cx - this.viewTx)
+        this.viewTy = cy - ratio * (cy - this.viewTy)
+        this.viewScale = newScale
+    }
+
+    private appendDefs(container: SVGElement): void {
         const defs = this.svgEl('defs')
 
         const arrow = this.svgEl('marker')
@@ -114,11 +202,11 @@ export class GraphCanvas extends RxElement {
 
         defs.appendChild(arrow)
         defs.appendChild(crossArrow)
-        svg.appendChild(defs)
+        container.appendChild(defs)
     }
 
     private appendGroup(
-        svg: SVGSVGElement,
+        container: SVGElement,
         group: PositionedGroup,
         closureResults: Record<string, ClosureResult>,
         graphKinds: Record<string, GraphKind>,
@@ -161,7 +249,7 @@ export class GraphCanvas extends RxElement {
         if (!(kind === 'machine' && result?.success)) {
             const squigglyX = group.x + 12
             const squigglyY = group.y + 21
-            const squigglyWidth = measureText(svg, labelText, GROUP_LABEL_FONT)
+            const squigglyWidth = measureText(this.svg!, labelText, GROUP_LABEL_FONT)
             const squiggly = this.svgEl('path')
             squiggly.setAttribute('d', this.squigglyPath(squigglyX, squigglyY, squigglyWidth))
             this.setAttrs(squiggly, {
@@ -170,7 +258,7 @@ export class GraphCanvas extends RxElement {
             g.appendChild(squiggly)
         }
 
-        svg.appendChild(g)
+        container.appendChild(g)
     }
 
     private squigglyPath(x: number, y: number, width: number): string {
@@ -188,7 +276,7 @@ export class GraphCanvas extends RxElement {
         return d
     }
 
-    private appendNode(svg: SVGSVGElement, node: PositionedNode): void {
+    private appendNode(container: SVGElement, node: PositionedNode): void {
         const g = this.svgEl('g')
         g.style.cursor = 'pointer'
 
@@ -209,11 +297,11 @@ export class GraphCanvas extends RxElement {
         text.textContent = node.label
         g.appendChild(text)
 
-        svg.appendChild(g)
+        container.appendChild(g)
     }
 
     private appendEdge(
-        svg: SVGSVGElement,
+        container: SVGElement,
         edge: PositionedEdge,
         layout: LayoutResult,
         graphKinds: Record<string, GraphKind>,
@@ -234,14 +322,14 @@ export class GraphCanvas extends RxElement {
                 'stroke-width': 1.5,
                 'marker-end': cross ? 'url(#arrow-cross)' : 'url(#arrow)',
             })
-            svg.appendChild(path)
+            container.appendChild(path)
         }
 
         if (edge.edgeName) {
             const g = this.svgEl('g')
             const onText = `(${edge.on})`
-            const nameWidth = measureText(svg, edge.edgeName, EDGE_NAME_FONT)
-            const onWidth = measureText(svg, onText, EDGE_ON_FONT, true)
+            const nameWidth = measureText(this.svg!, edge.edgeName, EDGE_NAME_FONT)
+            const onWidth = measureText(this.svg!, onText, EDGE_ON_FONT, true)
             const labelWidth = Math.max(nameWidth, onWidth) + EDGE_LABEL_PAD
             const labelHeight = EDGE_LABEL_LINE_HEIGHT * 2
 
@@ -276,7 +364,7 @@ export class GraphCanvas extends RxElement {
             const keys = transitionKeys[edge.graphKey]
             const missing = kind === 'graph-set' || (keys && !keys.includes(transitionName))
             if (missing) {
-                const innerWidth = measureText(svg, edge.on, EDGE_ON_FONT, true)
+                const innerWidth = measureText(this.svg!, edge.on, EDGE_ON_FONT, true)
                 const squigglyX = edge.labelX - innerWidth / 2
                 const squigglyY = edge.labelY + EDGE_LABEL_LINE_HEIGHT + 1
                 const squiggly = this.svgEl('path')
@@ -285,7 +373,7 @@ export class GraphCanvas extends RxElement {
                 g.appendChild(squiggly)
             }
 
-            svg.appendChild(g)
+            container.appendChild(g)
         }
     }
 
