@@ -1,4 +1,5 @@
 import { Component, RxElement, state } from '@yaw-rx/core'
+import { RxIf } from '@yaw-rx/core/directives/rx-if'
 import type { SandboxResult, ClosureResult, ClosureIssue, MachineSetValidationIssue } from '../services/sandbox.service.js'
 
 interface OutputEntry {
@@ -10,9 +11,16 @@ interface OutputEntry {
 
 @Component({
     selector: 'output-panel',
+    directives: [RxIf],
     template: `
         <div class="status-bar">
-            <span #statusText class="status"></span>
+            <span class="status">
+                <span rx-if="hasFailures" class="error">✗ </span>
+                <span rx-if="allOk" class="success">✓ </span>
+                <span class="error">{{failText}}</span>
+                <span class="success">{{okText}}</span>
+                <span class="warn">{{warnText}}</span>
+            </span>
             <button #toggleBtn class="toggle" onclick="onToggle">
                 <span class="toggle-icon">&#9650;</span>
             </button>
@@ -40,6 +48,9 @@ interface OutputEntry {
             color: #888;
             padding: 0 12px;
         }
+        .status .error { color: #c55; }
+        .status .success { color: #5b5; }
+        .status .warn { color: #da0; }
         .toggle {
             background: none;
             border: none;
@@ -94,13 +105,18 @@ interface OutputEntry {
 export class OutputPanel extends RxElement {
     @state sandboxResult: SandboxResult | null = null
     @state expanded = false
+    @state hasFailures = false
+    @state allOk = false
+    @state failText = ''
+    @state okText = ''
+    @state warnText = ''
 
-    statusText!: HTMLSpanElement
     toggleBtn!: HTMLButtonElement
     details!: HTMLDivElement
 
     override onRender(): void {
-        this.sandboxResult$.subscribe(r => this.renderResult(r))
+        this.sandboxResult$.subscribe(r => this.updateStatus(r))
+        this.sandboxResult$.subscribe(r => this.renderDetails(r))
         this.expanded$.subscribe((exp: boolean) => {
             this.details.style.display = exp ? '' : 'none'
             if (exp) {
@@ -115,35 +131,30 @@ export class OutputPanel extends RxElement {
         this.dispatchEvent(new CustomEvent('toggle-output', { bubbles: true, composed: true }))
     }
 
-    private renderResult(result: SandboxResult | null): void {
-        this.details.innerHTML = ''
-
+    private updateStatus(result: SandboxResult | null): void {
         if (!result) {
-            this.statusText.textContent = ''
+            this.hasFailures = false
+            this.allOk = false
+            this.failText = ''
+            this.okText = ''
+            this.warnText = ''
             return
         }
 
         if (!result.ok) {
-            this.statusText.textContent = '✗ Evaluation error'
-            this.statusText.style.color = '#c55'
-            const div = document.createElement('div')
-            div.className = 'issue'
-            div.textContent = result.error
-            this.details.appendChild(div)
+            this.hasFailures = true
+            this.allOk = false
+            this.failText = 'Evaluation error'
+            this.okText = ''
+            this.warnText = ''
             return
         }
 
         const entries = this.buildEntries(result.closureResults)
         const failures = entries.filter(e => !e.success)
-        const allWarnings = entries.flatMap(e => {
-            const cr = result.closureResults[e.key]
-            return cr.success ? cr.warnings : []
-        })
-
         const successes = entries.filter(e => e.success)
-        const failParts: string[] = []
-        const okParts: string[] = []
 
+        const failParts: string[] = []
         const graphFailures = failures.filter(e => result.graphKinds[e.key] !== 'machine')
         const machineFailures = failures.filter(e => result.graphKinds[e.key] === 'machine')
         if (graphFailures.length > 0) {
@@ -154,40 +165,46 @@ export class OutputPanel extends RxElement {
             const n = machineFailures.reduce((sum, e) => sum + e.issues.length, 0)
             failParts.push(`${n} machine closure issue${n !== 1 ? 's' : ''}`)
         }
+
+        const okParts: string[] = []
         if (successes.length > 0) {
             const machines = successes.filter(e => result.graphKinds[e.key] === 'machine').length
             const graphs = successes.length - machines
             if (machines > 0) okParts.push(`${machines} machine${machines !== 1 ? 's' : ''} closed`)
             if (graphs > 0) okParts.push(`${graphs} graph${graphs !== 1 ? 's' : ''} closed`)
         }
-        const suffix = allWarnings.length > 0 ? ' with warnings' : ''
 
-        this.statusText.textContent = ''
-        this.statusText.style.color = ''
-        const hasFailures = failParts.length > 0
-        const icon = document.createElement('span')
-        icon.style.color = hasFailures ? '#c55' : '#5b5'
-        icon.textContent = hasFailures ? '✗ ' : '✓ '
-        this.statusText.appendChild(icon)
-        if (hasFailures) {
-            const fail = document.createElement('span')
-            fail.style.color = '#c55'
-            fail.textContent = failParts.join(', ')
-            this.statusText.appendChild(fail)
+        this.hasFailures = failParts.length > 0
+        this.allOk = failParts.length === 0 && okParts.length > 0
+        this.failText = failParts.length > 0
+            ? failParts.join(', ') + (okParts.length > 0 ? ', ' : '')
+            : ''
+        this.okText = okParts.join(', ')
+
+        const hasWarnings = entries.some(e => {
+            const cr = result.closureResults[e.key]
+            return cr.success && cr.warnings.length > 0
+        })
+        this.warnText = hasWarnings ? ' with warnings' : ''
+    }
+
+    private renderDetails(result: SandboxResult | null): void {
+        this.details.innerHTML = ''
+        if (!result) return
+
+        if (!result.ok) {
+            const div = document.createElement('div')
+            div.className = 'issue'
+            div.textContent = result.error
+            this.details.appendChild(div)
+            return
         }
-        if (okParts.length > 0) {
-            if (hasFailures) this.statusText.appendChild(document.createTextNode(', '))
-            const ok = document.createElement('span')
-            ok.style.color = '#5b5'
-            ok.textContent = okParts.join(', ')
-            this.statusText.appendChild(ok)
-        }
-        if (suffix) {
-            const warn = document.createElement('span')
-            warn.style.color = '#da0'
-            warn.textContent = suffix
-            this.statusText.appendChild(warn)
-        }
+
+        const entries = this.buildEntries(result.closureResults)
+        const allWarnings = entries.flatMap(e => {
+            const cr = result.closureResults[e.key]
+            return cr.success ? cr.warnings : []
+        })
 
         for (const entry of entries) {
             const div = document.createElement('div')

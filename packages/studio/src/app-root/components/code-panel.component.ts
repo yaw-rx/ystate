@@ -64,7 +64,7 @@ import type { OutputPanel } from './output-panel.component.js'
             overflow: hidden;
         }
         .output-divider {
-            height: 2px;
+            height: 4px;
             background: var(--bg-1);
             border-top: 1px solid var(--border);
             cursor: ns-resize;
