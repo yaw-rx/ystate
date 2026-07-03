@@ -75,7 +75,7 @@ export class GraphCanvas extends RxElement {
     viewport!: HTMLDivElement
     private svg: SVGSVGElement | null = null
     private contentGroup: SVGGElement | null = null
-    private hasUserView = false
+    private viewState: 'initial' | 'fitted' | 'user' = 'initial'
     private contentWidth = 0
     private contentHeight = 0
     private pointers = new Map<number, { x: number; y: number }>()
@@ -129,13 +129,14 @@ export class GraphCanvas extends RxElement {
         for (const node of layout.nodes) this.appendNode(g, node, closureResults)
 
         svg.appendChild(g)
-        if (this.hasUserView) {
-            this.contentGroup.setAttribute('transform', `translate(${this.viewTx},${this.viewTy}) scale(${this.viewScale})`)
-        } else if (this.viewScale === 1) {
+        if (this.viewState === 'initial') {
             this.fitToViewport()
-        } else {
+            this.viewState = 'fitted'
+        } else if (this.viewState === 'fitted') {
             this.viewTx = (this.viewport.clientWidth - this.contentWidth * this.viewScale) / 2
             this.viewTy = (this.viewport.clientHeight - this.contentHeight * this.viewScale) / 2
+            this.contentGroup.setAttribute('transform', `translate(${this.viewTx},${this.viewTy}) scale(${this.viewScale})`)
+        } else {
             this.contentGroup.setAttribute('transform', `translate(${this.viewTx},${this.viewTy}) scale(${this.viewScale})`)
         }
     }
@@ -174,7 +175,7 @@ export class GraphCanvas extends RxElement {
         this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
 
         if (this.pointers.size === 1 && this.panStart) {
-            this.hasUserView = true
+            this.viewState = 'user'
             this.viewTx = this.panStart.tx + (e.clientX - this.panStart.x)
             this.viewTy = this.panStart.ty + (e.clientY - this.panStart.y)
         } else if (this.pointers.size === 2) {
@@ -241,7 +242,7 @@ export class GraphCanvas extends RxElement {
     }
 
     private zoomAt(cx: number, cy: number, factor: number): void {
-        this.hasUserView = true
+        this.viewState = 'user'
         const newScale = Math.min(Math.max(this.viewScale * factor, 0.1), 5)
         const ratio = newScale / this.viewScale
         this.viewTx = cx - ratio * (cx - this.viewTx)
