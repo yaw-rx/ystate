@@ -4,7 +4,10 @@ import * as monaco from 'monaco-editor'
 import type { Observable } from 'rxjs'
 import { map, combineLatest, distinctUntilChanged } from 'rxjs'
 import type { Workspace, WorkspaceFile } from '../services/workspace.service.js'
+import type { SandboxResult } from '../services/sandbox.service.js'
 import dtsBundle from 'virtual:dts-bundle'
+import './output-panel.component.js'
+import type { OutputPanel } from './output-panel.component.js'
 
 @Component({
     selector: 'code-panel',
@@ -18,6 +21,8 @@ import dtsBundle from 'virtual:dts-bundle'
             >{{file.name}}</button>
         </div>
         <div #editorContainer class="editor-container"></div>
+        <div class="output-divider" onpointerdown="startOutputResize"></div>
+        <output-panel #outputPanel [sandboxResult]="sandboxResult"></output-panel>
     `,
     styles: `
         :host {
@@ -58,6 +63,17 @@ import dtsBundle from 'virtual:dts-bundle'
             flex: 1;
             overflow: hidden;
         }
+        .output-divider {
+            height: 4px;
+            background: var(--bg-1);
+            border-top: 1px solid var(--border);
+            cursor: ns-resize;
+            flex-shrink: 0;
+            user-select: none;
+        }
+        .output-divider:hover {
+            border-top-color: var(--accent);
+        }
     `,
 })
 export class CodePanel extends RxElement {
@@ -65,11 +81,17 @@ export class CodePanel extends RxElement {
     @state workspace = ''
     @state activeTab = ''
     @state activeFiles: WorkspaceFile[] = []
+    @state sandboxResult: SandboxResult | null = null
 
     editorContainer!: HTMLDivElement
+    outputPanel!: OutputPanel
     private editor: monaco.editor.IStandaloneCodeEditor | null = null
     private models = new Map<string, monaco.editor.ITextModel>()
+    private modelDisposables: monaco.IDisposable[] = []
     private ro: ResizeObserver | undefined
+    private debounceTimer: ReturnType<typeof setTimeout> | null = null
+    private outputExpanded = false
+    private outputHeight = 200
     private static tsConfigured = false
 
     override onRender(): void {
@@ -109,13 +131,18 @@ export class CodePanel extends RxElement {
             const model = this.models.get(key)
             if (model && this.editor) this.editor.setModel(model)
         })
+
+        this.addEventListener('toggle-output', () => this.toggleOutput())
     }
 
     override onDestroy(): void {
         this.ro?.disconnect()
         this.editor?.dispose()
+        for (const d of this.modelDisposables) d.dispose()
+        this.modelDisposables = []
         for (const model of this.models.values()) model.dispose()
         this.models.clear()
+        if (this.debounceTimer) clearTimeout(this.debounceTimer)
     }
 
     isActiveTab(name: string): Observable<boolean> {
@@ -131,7 +158,66 @@ export class CodePanel extends RxElement {
         return this.models.get(key)?.getValue()
     }
 
+    private toggleOutput(): void {
+        this.outputExpanded = !this.outputExpanded
+        if (this.outputExpanded && this.outputHeight < 200) {
+            this.outputHeight = 200
+        }
+        this.applyOutputState()
+    }
+
+    startOutputResize(e: PointerEvent): void {
+        e.preventDefault()
+        const target = e.currentTarget as HTMLElement
+        target.setPointerCapture(e.pointerId)
+        const wasCollapsed = !this.outputExpanded
+        if (wasCollapsed) {
+            this.outputExpanded = true
+            this.outputPanel.style.height = '28px'
+            this.outputPanel.expanded = true
+        }
+        const startY = e.clientY
+        const startH = wasCollapsed ? 28 : this.outputHeight
+
+        const onMove = (ev: PointerEvent) => {
+            const h = Math.max(28, startH + (startY - ev.clientY))
+            this.outputHeight = h
+            this.outputPanel.style.height = `${h}px`
+            this.editor?.layout()
+        }
+        const onUp = () => {
+            target.removeEventListener('pointermove', onMove)
+            target.removeEventListener('pointerup', onUp)
+            if (this.outputHeight <= 28) {
+                this.outputExpanded = false
+                this.applyOutputState()
+            }
+        }
+        target.addEventListener('pointermove', onMove)
+        target.addEventListener('pointerup', onUp)
+    }
+
+    private applyOutputState(): void {
+        if (this.outputExpanded) {
+            this.outputPanel.expanded = true
+            this.outputPanel.style.height = `${this.outputHeight}px`
+        } else {
+            this.outputPanel.expanded = false
+            this.outputPanel.style.height = ''
+        }
+        this.editor?.layout()
+    }
+
+    private scheduleContentChange(): void {
+        if (this.debounceTimer) clearTimeout(this.debounceTimer)
+        this.debounceTimer = setTimeout(() => {
+            this.dispatchEvent(new CustomEvent('content-change', { bubbles: true, composed: true }))
+        }, 100)
+    }
+
     private rebuildModels(library: Workspace[]): void {
+        for (const d of this.modelDisposables) d.dispose()
+        this.modelDisposables = []
         for (const model of this.models.values()) model.dispose()
         this.models.clear()
 
@@ -145,6 +231,7 @@ export class CodePanel extends RxElement {
                     : 'typescript'
                 const model = monaco.editor.createModel(file.content, lang, uri)
                 this.models.set(key, model)
+                this.modelDisposables.push(model.onDidChangeContent(() => this.scheduleContentChange()))
                 console.log(`model: ${uri.toString()} (${lang})`)
             }
         }

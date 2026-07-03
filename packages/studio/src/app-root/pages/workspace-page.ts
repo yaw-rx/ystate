@@ -2,17 +2,28 @@ import { Component, Inject, RxElement, state } from '@yaw-rx/core'
 import { Router } from '@yaw-rx/core/router'
 import { type Observable, map, distinctUntilChanged } from 'rxjs'
 import { WorkspaceService, type Workspace } from '../services/workspace.service.js'
-import { SandboxService } from '../services/sandbox.service.js'
+import { SandboxService, type SandboxResult, type ClosureResult, type GraphKind } from '../services/sandbox.service.js'
 import { ElkLayoutService, type LayoutResult } from '../services/elk-layout.service.js'
+import type { CodePanel } from '../components/code-panel.component.js'
 import '../components/graph-canvas.component.js'
 import '../components/code-panel.component.js'
 
 @Component({
     selector: 'workspace-page',
     template: `
-        <graph-canvas class="canvas-area" [layout]="layoutResult"></graph-canvas>
+        <graph-canvas class="canvas-area"
+            [layout]="layoutResult"
+            [closureResults]="closureResults"
+            [graphKinds]="graphKinds"
+            [transitionKeys]="transitionKeys"
+        ></graph-canvas>
         <div class="divider" onpointerdown="startResize"></div>
-        <code-panel class="code-area" [library]="library" [workspace]="activeWorkspace" [style.width]="codePanelWidthStyle"></code-panel>
+        <code-panel class="code-area"
+            [library]="library"
+            [workspace]="activeWorkspace"
+            [sandboxResult]="sandboxResult"
+            [style.width]="codePanelWidthStyle"
+        ></code-panel>
     `,
     styles: `
         :host {
@@ -49,6 +60,10 @@ export class WorkspacePage extends RxElement {
     @state library: Workspace[] = []
     @state activeWorkspace = ''
     @state codePanelWidth = 420
+    @state sandboxResult: SandboxResult | null = null
+    @state closureResults: Record<string, ClosureResult> = {}
+    @state graphKinds: Record<string, GraphKind> = {}
+    @state transitionKeys: Record<string, string[]> = {}
 
     get codePanelWidthStyle$(): Observable<string> {
         return this.codePanelWidth$.pipe(map((w: number) => `${w}px`))
@@ -56,6 +71,7 @@ export class WorkspacePage extends RxElement {
 
     private readonly sandbox = new SandboxService()
     private readonly elkLayout = new ElkLayoutService()
+    private evalGeneration = 0
 
     startResize(e: PointerEvent): void {
         e.preventDefault()
@@ -87,6 +103,20 @@ export class WorkspacePage extends RxElement {
         ).subscribe((name: string) => {
             if (name) this.loadWorkspace(name)
         })
+
+        this.addEventListener('content-change', () => this.handleContentChange())
+    }
+
+    private handleContentChange(): void {
+        const codePanel = this.querySelector('code-panel') as CodePanel | null
+        const ws = this.workspace.getWorkspace(this.activeWorkspace)
+        if (!ws || !codePanel) return
+
+        const conceptFiles = ws.files
+            .filter(f => this.workspace.kindOf(f.name) === 'concept')
+            .map(f => ({ name: f.name, content: codePanel.getContent(f.name) ?? f.content }))
+
+        this.evaluateAndLayout(conceptFiles)
     }
 
     private async loadWorkspace(name: string): Promise<void> {
@@ -100,12 +130,22 @@ export class WorkspacePage extends RxElement {
             f => this.workspace.kindOf(f.name) === 'concept',
         )
 
-        try {
-            const result = await this.sandbox.evaluate(conceptFiles)
-            this.layoutResult = await this.elkLayout.layout(result.exports)
-        } catch (e) {
-            console.error('Sandbox evaluation failed:', e)
-        }
+        await this.evaluateAndLayout(conceptFiles)
+    }
+
+    private async evaluateAndLayout(files: { name: string; content: string }[]): Promise<void> {
+        const gen = ++this.evalGeneration
+        const result = await this.sandbox.evaluate(files)
+        if (gen !== this.evalGeneration) return
+
+        this.sandboxResult = result
+
+        if (!result.ok) return
+
+        this.graphKinds = result.graphKinds
+        this.transitionKeys = result.transitionKeys
+        this.closureResults = result.closureResults
+        this.layoutResult = await this.elkLayout.layout(result.exports)
     }
 
     override onDestroy(): void {

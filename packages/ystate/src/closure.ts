@@ -1,4 +1,4 @@
-import type { NodeData, EdgeDef, IncidenceGraph, IncidenceGraphSetCorrespondence, IncidenceGraphSetClosureIssue, NamespaceKind, TransitionDef } from './graph.js';
+import type { NodeData, EdgeDef, IncidenceGraph, FibredGraph, IncidenceGraphSetCorrespondence, IncidenceGraphSetClosureIssue, NamespaceKind, TransitionDef } from './graph.js';
 import { resolveRefs, unionGraphs, validateClosure, classifyDeps, namespaceFunctor, ROOT, HANDLER_DIRECTIONS, IncidenceGraphSetClosureError } from './graph.js';
 import type { IncidenceMachine, Machine, MachineSet, MachineCorrespondence, FlattenedIncidenceMachine, IncidenceMachineClosureIssue } from './machine.js';
 import { flattenIncidenceMachines, buildMachineCorrespondence, IncidenceMachineClosureError } from './machine.js';
@@ -46,10 +46,29 @@ export function closeGraph<
 }
 
 /**
- * Closes an IncidenceMachine, producing a `MachineSet`, a validated
- * collection of closed finite state machines.
+ * The result of closing an IncidenceGraphSet via `closeGraphSet`.
+ * Carries the `FibredGraph`, the closed root graph G' = (V', E'),
+ * and the intermediate products of closure so `closeMachineSet`
+ * can layer transition validation without re-deriving them.
  *
- * Given IM = (G, δ, { IMₖ }ₖ∈K):
+ * @template TNodes - The node set [V = { vᵢ }].
+ * @template TEdges - The incidence relation [E = { eᵢ }].
+ */
+export interface GraphSetClosureResult<
+  TNodes extends Record<string, NodeData>,
+  TEdges extends Record<string, EdgeDef<TNodes>>
+> {
+  fibredGraph: FibredGraph<TNodes, TEdges>
+  closedGraph: IncidenceGraph<Record<string, NodeData>, Record<string, EdgeDef>>
+  namespacedEntries: { namespace: string; namespacedGraph: IncidenceGraph<Record<string, NodeData>, Record<string, EdgeDef>>; incidenceMachine: IncidenceMachine<Record<string, NodeData>, Record<string, EdgeDef>, Record<string, TransitionDef>> }[]
+  unioned: string[]
+  disjoint: string[]
+}
+
+/**
+ * Closes an IncidenceGraphSet G = (V, E, { Gₖ }ₖ∈K), producing a
+ * `FibredGraph` with proven closure [E ⊆ V x V] and the fibre
+ * decomposition over the namespaceFunctors [{ fₖ, fₖ⁻¹ }].
  *
  * 1. **Classify** dep keys K into unioned R and disjoint K \ R
  *    via `classifyDeps`.
@@ -58,12 +77,101 @@ export function closeGraph<
  * 3. **Namespace** each flattened entry by applying namespaceFunctor
  *    fₖ: Gₖ → Gₖ' [injective graph homomorphism].
  * 4. **Close** the root graph via `closeGraph` with the images { Gₖ' }.
- * 5. **Correspondence** via `buildMachineCorrespondence`.
- * 6. **Validate** that every edge's `on` field is well-formed
+ * 5. **Correspondence** builds the preimage [fₖ⁻¹] and image [fₖ]
+ *    maps for the root graph and each namespaced subgraph.
+ *
+ * @param graphSet - G = (V, E, { Gₖ }ₖ∈K), the IncidenceGraphSet to close.
+ *   Deps must be IncidenceMachines at runtime (as produced by `define()`).
+ * @returns A `GraphSetClosureResult` containing the `FibredGraph`, the
+ *   closed root graph, and the intermediate products of closure.
+ * @throws `IncidenceGraphSetClosureError` if closure fails [E ⊄ V x V]
+ *   or the graph is not connected [|{Gᵢ}| > 1].
+ */
+export function closeGraphSet<
+  TNodes extends Record<string, NodeData>,
+  TEdges extends Record<string, EdgeDef<TNodes>>
+>(
+  graphSet: { nodes: TNodes; edges: TEdges; deps: Record<string, any> }
+): GraphSetClosureResult<TNodes, TEdges> {
+  const deps = graphSet.deps as Record<string, IncidenceMachine<Record<string, NodeData>, Record<string, EdgeDef>, Record<string, TransitionDef>>>
+  const { unioned, disjoint } = classifyDeps(graphSet.edges, deps)
+
+  const { flattened, namespaceMap } = unioned.length > 0
+    ? flattenIncidenceMachines(deps, unioned)
+    : { flattened: [] as FlattenedIncidenceMachine[], namespaceMap: {} as Record<string, string> }
+
+  const namespacedEntries = flattened.map(({ namespace: ns, incidenceMachine: im }) => ({
+    namespace: ns,
+    namespacedGraph: namespaceFunctor(im, ns),
+    incidenceMachine: im,
+  }))
+
+  const subgraphs = namespacedEntries.map(e => e.namespacedGraph)
+  const closedGraph = closeGraph(graphSet, namespaceMap, subgraphs)
+
+  const preimage: IncidenceGraphSetCorrespondence['preimage'] = {}
+  const image: IncidenceGraphSetCorrespondence['image'] = {}
+
+  preimage[ROOT] = { nodes: {}, edges: {} }
+  image[ROOT] = { nodes: {}, edges: {} }
+  for (const n of Object.keys(graphSet.nodes)) {
+    preimage[ROOT].nodes[n] = n
+    image[ROOT].nodes[n] = n
+  }
+  for (const e of Object.keys(graphSet.edges)) {
+    preimage[ROOT].edges[e] = e
+    image[ROOT].edges[e] = e
+  }
+
+  for (const { namespace: ns, namespacedGraph } of namespacedEntries) {
+    preimage[ns] = { nodes: {}, edges: {} }
+    image[ns] = { nodes: {}, edges: {} }
+    for (const nodeName of Object.keys(namespacedGraph.nodes)) {
+      const localName = nodeName.slice(ns.length + 1)
+      preimage[ns].nodes[nodeName] = localName
+      image[ns].nodes[localName] = nodeName
+    }
+    for (const edgeName of Object.keys(namespacedGraph.edges)) {
+      const localName = edgeName.slice(ns.length + 1)
+      preimage[ns].edges[edgeName] = localName
+      image[ns].edges[localName] = edgeName
+    }
+  }
+
+  const correspondence: IncidenceGraphSetCorrespondence = { preimage, image, unioned, disjoint }
+
+  return {
+    fibredGraph: { ...graphSet, correspondence } as FibredGraph<TNodes, TEdges>,
+    closedGraph,
+    namespacedEntries,
+    unioned,
+    disjoint,
+  }
+}
+
+/**
+ * Closes an IncidenceMachine, producing a `MachineSet`, a validated
+ * collection of closed finite state machines.
+ *
+ * Given IM = (G, δ, { IMₖ }ₖ∈K):
+ *
+ * 1. **Graph closure** via `closeGraphSet`:
+ *    - **Classify** dep keys K into unioned R and disjoint K \ R
+ *      via `classifyDeps`.
+ *    - **Flatten** the unioned tree via `flattenIncidenceMachines`,
+ *      producing a preorder sequence with namespace paths.
+ *    - **Namespace** each flattened entry by applying namespaceFunctor
+ *      fₖ: Gₖ → Gₖ' [injective graph homomorphism].
+ *    - **Close** the root graph via `closeGraph` with the images { Gₖ' }.
+ *    - **Correspondence** builds the preimage [fₖ⁻¹] and image [fₖ]
+ *      maps for the root graph and each namespaced subgraph.
+ * 2. **Transition correspondence** via `buildMachineCorrespondence`:
+ *    extends the graph-level correspondence with δ indexed by namespace.
+ * 3. **Validate** that every edge's `on` field is well-formed
  *    [`on = name.direction` where direction ∈ {next, error, complete}]
  *    and references a transition that exists in the edge's namespace
  *    [∀ e ∈ E', parse(on(e)) = (δⱼ, d) implies δⱼ ∈ δₙₛ(e)].
- * 7. **Close disjoint** machines recursively via `closeMachineSet`.
+ * 4. **Close disjoint** machines recursively via `closeMachineSet`.
  *
  * Every graph in the resulting set is independently closed
  * [E ⊆ V × V] and connected [|{Gᵢ}| = 1], and every edge
@@ -84,24 +192,15 @@ export function closeMachineSet<
 >(
   incidenceMachine: IncidenceMachine<TNodes, TEdges, TTransitions>
 ): MachineSet<TNodes, TEdges, TTransitions> {
-  const { deps } = incidenceMachine
+  const { closedGraph: rootGraph, namespacedEntries, unioned, disjoint } = closeGraphSet(incidenceMachine)
 
-  const { unioned, disjoint } = classifyDeps(incidenceMachine.edges, deps)
-
-  const { flattened, namespaceMap } = unioned.length > 0
-    ? flattenIncidenceMachines(deps, unioned)
-    : { flattened: [] as FlattenedIncidenceMachine[], namespaceMap: {} as Record<string, string> }
-
-  const namespacedEntries = flattened.map(({ namespace: ns, incidenceMachine: im }) => ({
-    namespace: ns,
-    namespacedGraph: namespaceFunctor(im, ns),
-    transitions: im.transitions,
-  }))
-
-  const subgraphs = namespacedEntries.map(e => e.namespacedGraph)
-  const rootGraph = closeGraph(incidenceMachine, namespaceMap, subgraphs)
-
-  const correspondence = buildMachineCorrespondence(incidenceMachine, incidenceMachine.transitions, namespacedEntries, unioned, disjoint)
+  const correspondence = buildMachineCorrespondence(
+    incidenceMachine,
+    incidenceMachine.transitions,
+    namespacedEntries.map(e => ({ namespace: e.namespace, namespacedGraph: e.namespacedGraph, transitions: e.incidenceMachine.transitions })),
+    unioned,
+    disjoint,
+  )
 
   const machineIssues: IncidenceMachineClosureIssue[] = []
   const validDirections = new Set<string>(HANDLER_DIRECTIONS)
@@ -164,7 +263,7 @@ export function closeMachineSet<
   }
 
   for (const key of disjoint) {
-    const disjointIM = deps[key]
+    const disjointIM = incidenceMachine.deps[key]
     const disjointSet = closeMachineSet(disjointIM)
     graphs[key] = { graph: disjointSet.graphs[ROOT].graph, kind: 'disjoint' }
     machines[key] = disjointSet.machines[ROOT]

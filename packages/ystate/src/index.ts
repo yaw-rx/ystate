@@ -12,7 +12,7 @@ import type { TransitionNames, TransitionInput } from './transitions.js';
 import type { TransitionDef } from './graph.js';
 import type { Widen } from './graph.js';
 import type { RunningMachineSet } from './runtime.js';
-import { closeMachineSet } from './closure.js';
+import { closeMachineSet, closeGraphSet } from './closure.js';
 import { validateMachineSet } from './validation.js';
 import { startMachineSet } from './runtime.js';
 
@@ -35,14 +35,16 @@ import { startMachineSet } from './runtime.js';
  *
  * @template TNodes - The node set [V = { vᵢ }].
  * @template TEdges - The incidence relation [E = { eᵢ }].
+ * @template TDeps - The K-indexed family of dependency IncidenceGraphSets [{ Gₖ }ₖ∈K].
  */
 export interface IncidenceGraphSetMixin<
   TNodes extends Record<string, NodeData>,
-  TEdges extends Record<string, EdgeDef<TNodes>>
+  TEdges extends Record<string, EdgeDef<TNodes>>,
+  TDeps extends Record<string, IncidenceGraphSet<Record<string, NodeData>, Record<string, EdgeDef>>> = Record<string, IncidenceGraphSet<Record<string, NodeData>, Record<string, EdgeDef>>>
 > extends IncidenceGraphSet<TNodes, TEdges> {
   implement<TResultMap extends Record<TransitionNames<TEdges>, unknown>>(
-    transitions: TransitionInput<TNodes, this['deps'], TEdges, TResultMap>
-  ): IncidenceMachineMixin<TNodes, TEdges, TransitionInput<TNodes, this['deps'], TEdges, TResultMap>>
+    transitions: TransitionInput<TNodes, TDeps, TEdges, TResultMap>
+  ): IncidenceMachineMixin<TNodes, TEdges, TransitionInput<TNodes, TDeps, TEdges, TResultMap>>
   close(): FibredGraph<TNodes, TEdges>
 }
 
@@ -107,8 +109,19 @@ export interface MachineSetMixin<
  * of dependencies { Gₖ }ₖ∈K. The graph may be open: edges can reference
  * nodes vₖ ∈ Vₖ outside V via `DepNodeRef`, resolved during closure.
  *
- * Returns the IncidenceGraph G = (V, E) and an `implement()` method
- * to supply transition functions δ, producing an IncidenceMachine.
+ * Returns the IncidenceGraphSet G = (V, E, { Gₖ }ₖ∈K) with two methods:
+ *
+ * - `close()` validates closure [E ⊆ V x V] at the graph level.
+ *   Delegates to `closeGraph`: classifies K into unioned R and
+ *   disjoint K \ R via `classifyDeps`, flattens the unioned tree
+ *   via `flattenIncidenceMachines`, applies namespaceFunctors
+ *   [{ fₖ: Gₖ → G' }], and validates the graph union. Returns a
+ *   `FibredGraph` carrying the correspondence maps [{ fₖ, fₖ⁻¹ }].
+ *   No transition functions [δ] are required or validated.
+ * - `implement()` accepts transition functions [δ = { δⱼ }] and
+ *   returns an `IncidenceMachineMixin`: the IncidenceMachine
+ *   (graph + transitions + deps narrowed to IncidenceMachines)
+ *   extended with its own `close()` for machine-level closure.
  *
  * @param def - The IncidenceGraphSet definition.
  * @param def.nodes - V = { vᵢ }, the node set with typed data shapes.
@@ -116,7 +129,8 @@ export interface MachineSetMixin<
  *   whose nodes may be referenced by edges via `DepNodeRef`.
  * @param def.edges - A record or a function receiving a `DepProxy` over { Gₖ }ₖ∈K,
  *   returning E = { eᵢ }, the incidence relation.
- * @returns `{ incidenceGraph, implement() }`.
+ * @returns An `IncidenceGraphSetMixin`: the IncidenceGraphSet with
+ *   `close()` and `implement()` methods.
  */
 export function define<
   TNodes extends Record<string, NodeData>,
@@ -133,7 +147,30 @@ export function define<
   const incidenceGraphSet: IncidenceGraphSet<TNodes, TEdges> = { nodes: def.nodes, edges: edgeDefs, deps: def.deps ?? {} }
 
   return {
-    incidenceGraphSet,
+    ...incidenceGraphSet,
+    /**
+     * Closes the IncidenceGraphSet G = (V, E, { Gₖ }ₖ∈K) by delegating
+     * to `closeGraphSet`. Validates closure [E ⊆ V x V] and builds the
+     * fibre decomposition over the namespaceFunctors [{ fₖ, fₖ⁻¹ }]:
+     *
+     * 1. **Classify** dep keys K into unioned R and disjoint K \ R
+     *    via `classifyDeps`.
+     * 2. **Flatten** the unioned tree via `flattenIncidenceMachines`,
+     *    producing a preorder sequence with namespace paths.
+     * 3. **Namespace** each flattened entry by applying namespaceFunctor
+     *    fₖ: Gₖ → Gₖ' [injective graph homomorphism].
+     * 4. **Close** the root graph via `closeGraph` with the images { Gₖ' }.
+     * 5. **Correspondence** builds the preimage [fₖ⁻¹] and image [fₖ]
+     *    maps for the root graph and each namespaced subgraph.
+     *
+     * @returns A `FibredGraph`: the IncidenceGraphSet with proven closure
+     *   and correspondence maps [{ fₖ, fₖ⁻¹ }].
+     * @throws `IncidenceGraphSetClosureError` if closure fails [E ⊄ V x V]
+     *   or the graph is not connected [|{Gᵢ}| > 1].
+     */
+    close(): FibredGraph<TNodes, TEdges> {
+      return closeGraphSet(incidenceGraphSet).fibredGraph
+    },
     /**
      * Equips the incidence graph with transition functions δ, producing
      * an `IncidenceMachine`. Each transition referenced by the edges must
@@ -197,12 +234,12 @@ export function define<
             validate() {
               return validateMachineSet(ms)
             },
-            start(entry, runningMachines?, initialNodeData?) {
+            start(entry: Extract<keyof TNodes, string>, runningMachines?: Record<string, RunningMachine>, initialNodeData?: { [K in Extract<keyof TNodes, string>]?: Partial<Widen<TNodes[K]>> }) {
               return startMachineSet(ms, entry, runningMachines, initialNodeData)
             }
-          }
+          } satisfies MachineSetMixin<TNodes, TEdges, TransitionInput<TNodes, TDeps, TEdges, TResultMap>>
         }
-      }
+      } satisfies IncidenceMachineMixin<TNodes, TEdges, TransitionInput<TNodes, TDeps, TEdges, TResultMap>>
     }
-  }
+  } satisfies IncidenceGraphSetMixin<TNodes, TEdges, TDeps>
 }
