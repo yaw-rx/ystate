@@ -149,10 +149,16 @@ export class GraphCanvas extends RxElement {
             x: group.x + 12, y: group.y + 18,
             fill: '#808080', 'font-family': 'monospace', 'font-size': GROUP_LABEL_FONT,
         })
-        text.textContent = labelText
+        const boldSpan = document.createElementNS('http://www.w3.org/2000/svg', 'tspan')
+        boldSpan.setAttribute('font-weight', 'bold')
+        boldSpan.textContent = prefix
+        const restSpan = document.createElementNS('http://www.w3.org/2000/svg', 'tspan')
+        restSpan.textContent = ` ${group.label}`
+        text.appendChild(boldSpan)
+        text.appendChild(restSpan)
         g.appendChild(text)
 
-        if (result && !result.success) {
+        if (!(kind === 'machine' && result?.success)) {
             const squigglyX = group.x + 12
             const squigglyY = group.y + 21
             const squigglyWidth = measureText(svg, labelText, GROUP_LABEL_FONT)

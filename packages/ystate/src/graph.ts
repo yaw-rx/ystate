@@ -252,7 +252,7 @@ export type IncidenceGraphSetClosureIssue =
   | { kind: 'missing-target'; edge: string; node: string; namespace: string; formattedNamespace: string; availableNodes: string[] }
   | { kind: 'missing-source'; edge: string; node: string; namespace: string; formattedNamespace: string; availableNodes: string[] }
   | { kind: 'namespace-collision'; namespace: string; formattedNamespace: string; node: string; existingNamespace: string; formattedExistingNamespace: string }
-  | { kind: 'multiple-graphs'; graphs: IncidenceGraph<Record<string, NodeData>, Record<string, EdgeDef>>[] }
+  | { kind: 'multiple-graphs'; graphs: IncidenceGraph<Record<string, NodeData>, Record<string, EdgeDef>>[]; subgraphs: { nodes: string[] }[] }
 
 export function isGraphMissingDep(issue: IncidenceGraphSetClosureIssue): issue is Extract<IncidenceGraphSetClosureIssue, { kind: 'missing-dep' }> {
   return issue.kind === 'missing-dep'
@@ -299,8 +299,8 @@ export class IncidenceGraphSetClosureError extends Error {
         case 'namespace-collision':
           return `  namespaceFunctor collision: node '${i.node}' in namespace '${i.namespace}' already exists from namespace '${i.existingNamespace}'`
         case 'multiple-graphs':
-          return `  closure produced ${i.graphs.length} disjoint graphs instead of one graph:\n` + i.graphs.map((g: IncidenceGraph<Record<string, NodeData>, Record<string, EdgeDef>>, idx: number) =>
-            `    ${idx + 1}: V = {${Object.keys(g.nodes).join(', ')}}, E = {${Object.keys(g.edges).join(', ')}}`
+          return `  closure produced ${i.subgraphs.length} disjoint graphs instead of 1:\n` + i.subgraphs.map((sg, idx) =>
+            `    ${idx + 1}: V = {${sg.nodes.join(', ')}}`
           ).join('\n')
       }
     })
@@ -526,6 +526,9 @@ export function validateClosure(
     graphs.push({ nodes, edges })
   }
 
-  issues.push({ kind: 'multiple-graphs', graphs })
+  const subgraphs = graphs
+    .map(g => ({ nodes: Object.keys(g.nodes) }))
+    .sort((a, b) => a.nodes.length - b.nodes.length)
+  issues.push({ kind: 'multiple-graphs', graphs, subgraphs })
   return issues
 }

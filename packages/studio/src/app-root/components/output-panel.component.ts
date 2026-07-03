@@ -140,19 +140,53 @@ export class OutputPanel extends RxElement {
             return cr.success ? cr.warnings : []
         })
 
-        if (failures.length === 0) {
-            this.statusText.style.color = '#5b5'
-            const machines = entries.filter(e => result.graphKinds[e.key] === 'machine').length
-            const graphs = entries.length - machines
-            const parts: string[] = []
-            if (machines > 0) parts.push(`${machines} machine${machines !== 1 ? 's' : ''} closed`)
-            if (graphs > 0) parts.push(`${graphs} graph${graphs !== 1 ? 's' : ''} closed`)
-            const suffix = allWarnings.length > 0 ? ' with warnings' : ''
-            this.statusText.textContent = `✓ ${parts.join(', ')}${suffix}`
-        } else {
-            this.statusText.style.color = '#c55'
-            const n = failures.reduce((sum, e) => sum + e.issues.length, 0)
-            this.statusText.textContent = `✗ ${n} closure issue${n !== 1 ? 's' : ''}`
+        const successes = entries.filter(e => e.success)
+        const failParts: string[] = []
+        const okParts: string[] = []
+
+        const graphFailures = failures.filter(e => result.graphKinds[e.key] !== 'machine')
+        const machineFailures = failures.filter(e => result.graphKinds[e.key] === 'machine')
+        if (graphFailures.length > 0) {
+            const n = graphFailures.reduce((sum, e) => sum + e.issues.length, 0)
+            failParts.push(`${n} graph closure issue${n !== 1 ? 's' : ''}`)
+        }
+        if (machineFailures.length > 0) {
+            const n = machineFailures.reduce((sum, e) => sum + e.issues.length, 0)
+            failParts.push(`${n} machine closure issue${n !== 1 ? 's' : ''}`)
+        }
+        if (successes.length > 0) {
+            const machines = successes.filter(e => result.graphKinds[e.key] === 'machine').length
+            const graphs = successes.length - machines
+            if (machines > 0) okParts.push(`${machines} machine${machines !== 1 ? 's' : ''} closed`)
+            if (graphs > 0) okParts.push(`${graphs} graph${graphs !== 1 ? 's' : ''} closed`)
+        }
+        const suffix = allWarnings.length > 0 ? ' with warnings' : ''
+
+        this.statusText.textContent = ''
+        this.statusText.style.color = ''
+        const hasFailures = failParts.length > 0
+        const icon = document.createElement('span')
+        icon.style.color = hasFailures ? '#c55' : '#5b5'
+        icon.textContent = hasFailures ? '✗ ' : '✓ '
+        this.statusText.appendChild(icon)
+        if (hasFailures) {
+            const fail = document.createElement('span')
+            fail.style.color = '#c55'
+            fail.textContent = failParts.join(', ')
+            this.statusText.appendChild(fail)
+        }
+        if (okParts.length > 0) {
+            if (hasFailures) this.statusText.appendChild(document.createTextNode(', '))
+            const ok = document.createElement('span')
+            ok.style.color = '#5b5'
+            ok.textContent = okParts.join(', ')
+            this.statusText.appendChild(ok)
+        }
+        if (suffix) {
+            const warn = document.createElement('span')
+            warn.style.color = '#da0'
+            warn.textContent = suffix
+            this.statusText.appendChild(warn)
         }
 
         for (const entry of entries) {
@@ -204,7 +238,7 @@ export class OutputPanel extends RxElement {
             case 'namespace-collision':
                 return `Namespace collision: node '${issue.node}' in ${issue.formattedNamespace} already from ${issue.formattedExistingNamespace}`
             case 'multiple-graphs':
-                return `Closure produced ${issue.graphs.length} disjoint graphs instead of 1`
+                return `Closure produced ${issue.subgraphs.length} disjoint graphs instead of 1:\n` + issue.subgraphs.map(sg => `    V = {${sg.nodes.join(', ')}}`).join('\n')
             case 'missing-transition':
                 return `Edge '${issue.edge}': transition '${issue.transition}' not in δ at ${issue.formattedNamespace}`
             case 'missing-handler':
