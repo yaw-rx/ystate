@@ -23,10 +23,14 @@ function measureText(svg: SVGSVGElement, text: string, fontSize: number, italic 
 
 @Component({
     selector: 'graph-canvas',
-    template: `<div #viewport onwheel="onWheel($event)" onpointerdown="onPointerDown($event)" onpointermove="onPointerMove($event)" onpointerup="onPointerUp($event)" onpointercancel="onPointerUp($event)"></div>`,
+    template: `
+        <div #viewport onwheel="onWheel($event)" onpointerdown="onPointerDown($event)" onpointermove="onPointerMove($event)" onpointerup="onPointerUp($event)" onpointercancel="onPointerUp($event)"></div>
+        <button class="fullscreen-btn" onclick="toggleFullscreen">⛶</button>
+    `,
     styles: `
         :host {
             display: block;
+            position: relative;
             width: 100%;
             height: 100%;
             overflow: hidden;
@@ -36,6 +40,27 @@ function measureText(svg: SVGSVGElement, text: string, fontSize: number, italic 
             width: 100%;
             height: 100%;
             touch-action: none;
+        }
+        .fullscreen-btn {
+            position: absolute;
+            bottom: 8px;
+            right: 8px;
+            width: 28px;
+            height: 28px;
+            background: var(--bg-1);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            color: var(--dim);
+            font-size: 16px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: color 0.1s, background 0.1s;
+        }
+        .fullscreen-btn:hover {
+            color: var(--text);
+            background: var(--bg-4);
         }
     `,
 })
@@ -56,9 +81,11 @@ export class GraphCanvas extends RxElement {
     private pointers = new Map<number, { x: number; y: number }>()
     private lastPinchDist = 0
     private panStart: { x: number; y: number; tx: number; ty: number } | null = null
-
+    private preFullscreenVw = 0
+    private preFullscreenVh = 0
 
     override onRender(): void {
+        this.addEventListener('fullscreenchange', () => this.onFullscreenChange())
         combineLatest([this.layout$, this.closureResults$, this.graphKinds$, this.transitionKeys$]).subscribe(
             ([layout, closureResults, graphKinds, transitionKeys]) => this.render(layout, closureResults, graphKinds, transitionKeys),
         )
@@ -160,6 +187,53 @@ export class GraphCanvas extends RxElement {
     onPointerUp(e: PointerEvent): void {
         this.pointers.delete(e.pointerId)
         if (this.pointers.size === 0) this.panStart = null
+    }
+
+    toggleFullscreen(): void {
+        if (document.fullscreenElement) {
+            document.exitFullscreen()
+        } else {
+            this.preFullscreenVw = this.viewport.clientWidth
+            this.preFullscreenVh = this.viewport.clientHeight
+            this.requestFullscreen()
+        }
+    }
+
+    private onFullscreenChange(): void {
+        const oldVw = this.preFullscreenVw
+        const oldVh = this.preFullscreenVh
+        if (oldVw === 0 || oldVh === 0) return
+
+        const ro = new ResizeObserver(() => {
+            ro.disconnect()
+            const newVw = this.viewport.clientWidth
+            const newVh = this.viewport.clientHeight
+            if (newVw === 0 || newVh === 0 || (newVw === oldVw && newVh === oldVh)) return
+
+            const contentLeft = this.viewTx
+            const contentTop = this.viewTy
+            const contentRight = oldVw - (this.viewTx + this.contentWidth * this.viewScale)
+            const contentBottom = oldVh - (this.viewTy + this.contentHeight * this.viewScale)
+
+            const minDistX = Math.min(contentLeft, contentRight)
+            const minDistY = Math.min(contentTop, contentBottom)
+            const minDist = Math.min(minDistX, minDistY)
+
+            const centerX = (oldVw / 2 - this.viewTx) / this.viewScale
+            const centerY = (oldVh / 2 - this.viewTy) / this.viewScale
+
+            const availW = newVw - minDist * 2
+            const availH = newVh - minDist * 2
+            const newScale = Math.min(availW / this.contentWidth, availH / this.contentHeight)
+
+            this.viewTx = newVw / 2 - centerX * newScale
+            this.viewTy = newVh / 2 - centerY * newScale
+            this.viewScale = newScale
+
+            this.preFullscreenVw = newVw
+            this.preFullscreenVh = newVh
+        })
+        ro.observe(this.viewport)
     }
 
     private zoomAt(cx: number, cy: number, factor: number): void {
