@@ -51,18 +51,33 @@ export interface MachineCorrespondence extends IncidenceGraphSetCorrespondence {
 }
 
 /**
- * An IncidenceMachine closure issue. Each variant identifies an edge
- * [e ∈ E] with a transition-level problem and carries enough context
- * to diagnose it: a missing δⱼ at a given namespace, a malformed
- * edge binding, a missing handler for a direction demanded by an
- * edge [d ∉ keys(δⱼ) \ {$}], or a namespace with no collected
- * transitions.
+ * An IncidenceMachine closure issue. Variants are either
+ * transition-scoped or edge-scoped:
+ *
+ * Transition-scoped (per δⱼ):
+ * - `incomplete-transition`: δⱼ is missing a required field
+ *   [$ ∉ keys(δⱼ) or next ∉ keys(δⱼ)]. Every transition must
+ *   provide both the observable factory [$] and the [next] handler.
+ *
+ * Edge-scoped (per e ∈ E):
+ * - `missing-transition`: edge e references a transition δⱼ that
+ *   does not exist at its namespace [δⱼ ∉ δₙₛ(e)].
+ * - `missing-handler`: edge e demands a handler direction that δⱼ
+ *   does not implement [d ∉ keys(δⱼ) \ {$}].
+ * - `malformed-edge-on`: edge e has an unparseable `on` field.
+ * - `missing-namespace-transitions`: edge e belongs to a namespace
+ *   with no collected transitions.
  */
 export type IncidenceMachineClosureIssue =
+  | { kind: 'incomplete-transition'; transition: string; field: string; namespace: string; formattedNamespace: string; availableFields: string[] }
   | { kind: 'missing-transition'; edge: string; transition: string; namespace: string; formattedNamespace: string; availableTransitions: string[] }
   | { kind: 'missing-handler'; edge: string; transition: string; direction: string; namespace: string; formattedNamespace: string; availableHandlers: string[] }
   | { kind: 'malformed-edge-on'; edge: string; on: string }
   | { kind: 'missing-namespace-transitions'; edge: string; namespace: string; formattedNamespace: string; availableNamespaces: string[] }
+
+export function isIncompleteTransition(issue: IncidenceMachineClosureIssue): issue is Extract<IncidenceMachineClosureIssue, { kind: 'incomplete-transition' }> {
+  return issue.kind === 'incomplete-transition'
+}
 
 export function isClosureMissingTransition(issue: IncidenceMachineClosureIssue): issue is Extract<IncidenceMachineClosureIssue, { kind: 'missing-transition' }> {
   return issue.kind === 'missing-transition'
@@ -112,16 +127,19 @@ export function isUnusedTransition(issue: MachineSetValidationIssue): issue is E
 }
 
 /**
- * IncidenceMachine closure failed. The topology is valid [E ⊆ V × V]
- * but one or more edges reference transition functions [δⱼ] that
- * have no implementation, or demand a handler direction that δⱼ
- * does not provide [d ∉ keys(δⱼ) \ {$}].
+ * IncidenceMachine closure failed. Either a transition δⱼ is missing
+ * a required field [$ ∉ keys(δⱼ) or next ∉ keys(δⱼ)], an edge
+ * references a transition that does not exist [δⱼ ∉ δₙₛ(e)], or an
+ * edge demands a handler direction that δⱼ does not implement
+ * [d ∉ keys(δⱼ) \ {$}].
  */
 export class IncidenceMachineClosureError extends Error {
   issues: IncidenceMachineClosureIssue[]
   constructor(issues: IncidenceMachineClosureIssue[]) {
     const lines = issues.map(i => {
       switch (i.kind) {
+        case 'incomplete-transition':
+          return `  transition '${i.transition}': missing required field '${i.field}' at ${i.formattedNamespace}. Available fields [${i.availableFields.join(', ')}]`
         case 'missing-transition':
           return `  edge '${i.edge}': transition '${i.transition}' not in δ at namespace '${i.namespace}'. Available [δ = {${i.availableTransitions.join(', ')}}]`
         case 'missing-handler':

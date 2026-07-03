@@ -125,14 +125,18 @@ export class GraphCanvas extends RxElement {
 
         this.appendDefs(g)
         for (const group of layout.groups) this.appendGroup(g, group, closureResults, graphKinds)
-        for (const edge of layout.edges) this.appendEdge(g, edge, layout, graphKinds, transitionKeys)
-        for (const node of layout.nodes) this.appendNode(g, node)
+        for (const edge of layout.edges) this.appendEdge(g, edge, layout, graphKinds, transitionKeys, closureResults)
+        for (const node of layout.nodes) this.appendNode(g, node, closureResults)
 
         svg.appendChild(g)
         if (this.hasUserView) {
             this.contentGroup.setAttribute('transform', `translate(${this.viewTx},${this.viewTy}) scale(${this.viewScale})`)
-        } else {
+        } else if (this.viewScale === 1) {
             this.fitToViewport()
+        } else {
+            this.viewTx = (this.viewport.clientWidth - this.contentWidth * this.viewScale) / 2
+            this.viewTy = (this.viewport.clientHeight - this.contentHeight * this.viewScale) / 2
+            this.contentGroup.setAttribute('transform', `translate(${this.viewTx},${this.viewTy}) scale(${this.viewScale})`)
         }
     }
 
@@ -274,8 +278,22 @@ export class GraphCanvas extends RxElement {
         crossPath.setAttribute('fill', '#8af')
         crossArrow.appendChild(crossPath)
 
+        const errorArrow = this.svgEl('marker')
+        errorArrow.setAttribute('id', 'arrow-error')
+        errorArrow.setAttribute('viewBox', '0 0 10 10')
+        errorArrow.setAttribute('refX', '10')
+        errorArrow.setAttribute('refY', '5')
+        errorArrow.setAttribute('markerWidth', '8')
+        errorArrow.setAttribute('markerHeight', '8')
+        errorArrow.setAttribute('orient', 'auto-start-reverse')
+        const errorPath = this.svgEl('path')
+        errorPath.setAttribute('d', 'M 0 0 L 10 5 L 0 10 Z')
+        errorPath.setAttribute('fill', '#c55')
+        errorArrow.appendChild(errorPath)
+
         defs.appendChild(arrow)
         defs.appendChild(crossArrow)
+        defs.appendChild(errorArrow)
         container.appendChild(defs)
     }
 
@@ -350,15 +368,21 @@ export class GraphCanvas extends RxElement {
         return d
     }
 
-    private appendNode(container: SVGElement, node: PositionedNode): void {
+    private appendNode(container: SVGElement, node: PositionedNode, closureResults: Record<string, ClosureResult>): void {
         const g = this.svgEl('g')
         g.style.cursor = 'pointer'
+
+        const cr = closureResults[node.graphKey]
+        const nodeLocal = node.id.slice(node.graphKey.length + 1)
+        const isMissingNode = cr && !cr.success && cr.issues.some(i =>
+            (i.kind === 'missing-target' || i.kind === 'missing-source') && i.node === nodeLocal
+        )
 
         const rect = this.svgEl('rect')
         this.setAttrs(rect, {
             x: node.x, y: node.y,
             width: node.width, height: node.height,
-            rx: 4, fill: '#1a1a1a', stroke: '#444', 'stroke-width': 1,
+            rx: 4, fill: '#1a1a1a', stroke: isMissingNode ? '#c55' : '#444', 'stroke-width': 1,
         })
         g.appendChild(rect)
 
@@ -380,10 +404,21 @@ export class GraphCanvas extends RxElement {
         layout: LayoutResult,
         graphKinds: Record<string, GraphKind>,
         transitionKeys: Record<string, string[]>,
+        closureResults: Record<string, ClosureResult>,
     ): void {
         const cross = this.isCrossGraph(edge, layout)
-        const edgeColor = cross ? '#8af' : '#9a9a9a'
         const kind = graphKinds[edge.graphKey]
+
+        const transitionName = edge.edgeName && edge.on.indexOf('.') !== -1 ? edge.on.slice(0, edge.on.indexOf('.')) : edge.on
+        const keys = transitionKeys[edge.graphKey]
+        const cr = closureResults[edge.graphKey]
+        const direction = edge.on.indexOf('.') !== -1 ? edge.on.slice(edge.on.indexOf('.') + 1) : ''
+        const hasEdgeIssue = cr && !cr.success && cr.issues.some(i =>
+            ('edge' in i && i.edge === edge.edgeName) ||
+            (i.kind === 'incomplete-transition' && i.transition === transitionName && (i.field === '$' || i.field === direction))
+        )
+        const squiggly = kind === 'graph-set' || (keys && !keys.includes(transitionName)) || hasEdgeIssue
+        const edgeColor = hasEdgeIssue ? '#c55' : cross ? '#8af' : '#9a9a9a'
 
         for (const section of edge.sections) {
             const points = [section.startPoint, ...(section.bendPoints ?? []), section.endPoint]
@@ -394,7 +429,7 @@ export class GraphCanvas extends RxElement {
                 d, fill: 'none',
                 stroke: edgeColor,
                 'stroke-width': 1.5,
-                'marker-end': cross ? 'url(#arrow-cross)' : 'url(#arrow)',
+                'marker-end': hasEdgeIssue ? 'url(#arrow-error)' : cross ? 'url(#arrow-cross)' : 'url(#arrow)',
             })
             container.appendChild(path)
         }
@@ -418,7 +453,7 @@ export class GraphCanvas extends RxElement {
             const nameText = this.svgEl('text')
             this.setAttrs(nameText, {
                 x: edge.labelX, y: edge.labelY, 'text-anchor': 'middle',
-                fill: cross ? '#8af' : '#c0c0c0',
+                fill: hasEdgeIssue ? '#c55' : cross ? '#8af' : '#c0c0c0',
                 'font-family': 'monospace', 'font-size': EDGE_NAME_FONT,
             })
             nameText.textContent = edge.edgeName
@@ -427,17 +462,13 @@ export class GraphCanvas extends RxElement {
             const onLabel = this.svgEl('text')
             this.setAttrs(onLabel, {
                 x: edge.labelX, y: edge.labelY + EDGE_LABEL_LINE_HEIGHT - 2, 'text-anchor': 'middle',
-                fill: cross ? '#6af' : '#888',
+                fill: hasEdgeIssue ? '#c55' : cross ? '#6af' : '#888',
                 'font-family': 'monospace', 'font-size': EDGE_ON_FONT,
                 'font-style': 'italic',
             })
             onLabel.textContent = onText
             g.appendChild(onLabel)
-
-            const transitionName = edge.on.indexOf('.') !== -1 ? edge.on.slice(0, edge.on.indexOf('.')) : edge.on
-            const keys = transitionKeys[edge.graphKey]
-            const missing = kind === 'graph-set' || (keys && !keys.includes(transitionName))
-            if (missing) {
+            if (squiggly) {
                 const innerWidth = measureText(this.svg!, edge.on, EDGE_ON_FONT, true)
                 const squigglyX = edge.labelX - innerWidth / 2
                 const squigglyY = edge.labelY + EDGE_LABEL_LINE_HEIGHT + 1

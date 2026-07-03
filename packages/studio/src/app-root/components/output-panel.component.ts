@@ -256,6 +256,8 @@ export class OutputPanel extends RxElement {
                 return `Namespace collision: node '${issue.node}' in ${issue.formattedNamespace} already from ${issue.formattedExistingNamespace}`
             case 'multiple-graphs':
                 return `Closure produced ${issue.subgraphs.length} disjoint graphs instead of 1:\n` + issue.subgraphs.map(sg => `    V = {${sg.nodes.join(', ')}}`).join('\n')
+            case 'incomplete-transition':
+                return `Transition '${issue.transition}' missing required field '${issue.field}' at ${issue.formattedNamespace}`
             case 'missing-transition':
                 return `Edge '${issue.edge}': transition '${issue.transition}' not in δ at ${issue.formattedNamespace}`
             case 'missing-handler':

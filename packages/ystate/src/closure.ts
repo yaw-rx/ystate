@@ -167,11 +167,15 @@ export function closeGraphSet<
  *      maps for the root graph and each namespaced subgraph.
  * 2. **Transition correspondence** via `buildMachineCorrespondence`:
  *    extends the graph-level correspondence with δ indexed by namespace.
- * 3. **Validate** that every edge's `on` field is well-formed
- *    [`on = name.direction` where direction ∈ {next, error, complete}]
- *    and references a transition that exists in the edge's namespace
- *    [∀ e ∈ E', parse(on(e)) = (δⱼ, d) implies δⱼ ∈ δₙₛ(e)].
- * 4. **Close disjoint** machines recursively via `closeMachineSet`.
+ * 3. **Validate required fields** on every transition δⱼ in every
+ *    namespace: [$ ∈ keys(δⱼ) and next ∈ keys(δⱼ)]. These are
+ *    structurally required by `TransitionDef`.
+ * 4. **Validate edges**: every edge's `on` field is well-formed
+ *    [`on = name.direction` where direction ∈ {next, error, complete}],
+ *    references a transition that exists in the edge's namespace
+ *    [∀ e ∈ E', parse(on(e)) = (δⱼ, d) implies δⱼ ∈ δₙₛ(e)], and
+ *    the demanded direction exists [d ∈ keys(δⱼ) \ {$}].
+ * 5. **Close disjoint** machines recursively via `closeMachineSet`.
  *
  * Every graph in the resulting set is independently closed
  * [E ⊆ V × V] and connected [|{Gᵢ}| = 1], and every edge
@@ -182,8 +186,10 @@ export function closeGraphSet<
  * @returns A `MachineSet` with closed graphs, machines, and correspondence.
  * @throws `IncidenceGraphSetClosureError` if any constituent graph
  *   fails closure [E ⊄ V × V] or is not connected [|{Gᵢ}| > 1].
- * @throws `IncidenceMachineClosureError` if any edge has a malformed
- *   `on` field or references a missing transition [δⱼ ∉ δₙₛ(e)].
+ * @throws `IncidenceMachineClosureError` if any transition is missing
+ *   a required field [$ ∉ keys(δⱼ) or next ∉ keys(δⱼ)], any edge
+ *   has a malformed `on` field, or references a missing transition
+ *   [δⱼ ∉ δₙₛ(e)].
  */
 export function closeMachineSet<
   TNodes extends Record<string, NodeData>,
@@ -203,6 +209,18 @@ export function closeMachineSet<
   )
 
   const machineIssues: IncidenceMachineClosureIssue[] = []
+
+  for (const [ns, transitions] of Object.entries(correspondence.transitions)) {
+    const formattedNs = ns === '' ? 'ROOT' : `'${ns}'`
+    for (const [name, handler] of Object.entries(transitions)) {
+      for (const required of ['$', 'next'] as const) {
+        if (!(required in handler)) {
+          machineIssues.push({ kind: 'incomplete-transition', transition: name, field: required, namespace: ns, formattedNamespace: formattedNs, availableFields: Object.keys(handler) })
+        }
+      }
+    }
+  }
+
   const validDirections = new Set<string>(HANDLER_DIRECTIONS)
   for (const [edgeName, edge] of Object.entries(rootGraph.edges)) {
     const dotIdx = edge.on.indexOf('.')
@@ -227,7 +245,7 @@ export function closeMachineSet<
     } else {
       const direction = edge.on.slice(dotIdx + 1)
       const handler = nsTransitions[transitionName]
-      if (direction !== 'next' && !(direction in handler)) {
+      if (!(direction in handler)) {
         const availableHandlers = Object.keys(handler).filter(k => k !== '$')
         machineIssues.push({ kind: 'missing-handler', edge: edgeName, transition: transitionName, direction, namespace: ns, formattedNamespace: formattedNs, availableHandlers })
       }
