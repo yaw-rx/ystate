@@ -1,7 +1,7 @@
 import { Component, RxElement, state } from '@yaw-rx/core'
 import { RxIf } from '@yaw-rx/core/directives/rx-if'
 import { RxFor } from '@yaw-rx/core/directives/rx-for'
-import { map, type Observable } from 'rxjs'
+import { map, tap, type Observable, type Subscription } from 'rxjs'
 import type { SandboxResult, ClosureResult, ClosureIssue, MachineSetValidationIssue } from '../services/sandbox.service.js'
 
 interface OutputEntry {
@@ -137,13 +137,21 @@ export class OutputPanel extends RxElement {
     @state errorText = ''
     @state detailEntries: DetailEntry[] = []
     @state warnings: string[] = []
+    private subs: Subscription[] = []
 
     get detailsDisplay(): Observable<string> {
         return this.expanded$.pipe(map((exp: boolean) => exp ? '' : 'none'))
     }
 
     override onInit(): void {
-        this.sandboxResult$.subscribe((r: SandboxResult | null) => this.updateFromResult(r))
+        this.subs.push(this.sandboxResult$.pipe(
+            tap((r: SandboxResult | null) => this.updateFromResult(r)),
+        ).subscribe())
+    }
+
+    override onDestroy(): void {
+        for (const s of this.subs) s.unsubscribe()
+        this.subs = []
     }
 
     onToggle(): void {

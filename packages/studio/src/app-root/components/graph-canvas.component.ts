@@ -1,7 +1,7 @@
 import { Component, RxElement, state } from '@yaw-rx/core'
 import type { LayoutResult, PositionedNode, PositionedEdge, PositionedGroup } from '../services/elk-layout.service.js'
 import type { ClosureResult, GraphKind } from '../services/sandbox.service.js'
-import { combineLatest } from 'rxjs'
+import { combineLatest, tap, type Subscription } from 'rxjs'
 
 const EDGE_NAME_FONT = 10
 const EDGE_ON_FONT = 8
@@ -86,17 +86,18 @@ export class GraphCanvas extends RxElement {
     private preFullscreenTy = 0
     private preFullscreenScreenX = 0
     private preFullscreenScreenY = 0
+    private subs: Subscription[] = []
 
     override onRender(): void {
         this.addEventListener('fullscreenchange', () => this.onFullscreenChange())
-        combineLatest([this.layout$, this.closureResults$, this.graphKinds$, this.transitionKeys$]).subscribe(
-            ([layout, closureResults, graphKinds, transitionKeys]) => this.render(layout, closureResults, graphKinds, transitionKeys),
-        )
-        combineLatest([this.viewScale$, this.viewTx$, this.viewTy$]).subscribe(
-            ([s, tx, ty]) => {
+        this.subs.push(combineLatest([this.layout$, this.closureResults$, this.graphKinds$, this.transitionKeys$]).pipe(
+            tap(([layout, closureResults, graphKinds, transitionKeys]) => this.render(layout, closureResults, graphKinds, transitionKeys)),
+        ).subscribe())
+        this.subs.push(combineLatest([this.viewScale$, this.viewTx$, this.viewTy$]).pipe(
+            tap(([s, tx, ty]) => {
                 if (this.contentGroup) this.contentGroup.setAttribute('transform', `translate(${tx},${ty}) scale(${s})`)
-            },
-        )
+            }),
+        ).subscribe())
     }
 
     private render(
@@ -489,5 +490,10 @@ export class GraphCanvas extends RxElement {
 
     private setAttrs(el: SVGElement, attrs: Record<string, string | number>): void {
         for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, String(v))
+    }
+
+    override onDestroy(): void {
+        for (const s of this.subs) s.unsubscribe()
+        this.subs = []
     }
 }

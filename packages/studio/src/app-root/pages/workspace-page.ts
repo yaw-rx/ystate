@@ -1,6 +1,6 @@
 import { Component, Inject, RxElement, state } from '@yaw-rx/core'
 import { Router } from '@yaw-rx/core/router'
-import { type Observable, map, distinctUntilChanged } from 'rxjs'
+import { type Observable, type Subscription, map, tap, filter, distinctUntilChanged, skip, debounceTime } from 'rxjs'
 import { WorkspaceService, type Workspace } from '../services/workspace.service.js'
 import { SandboxService, type SandboxResult, type ClosureResult, type GraphKind } from '../services/sandbox.service.js'
 import { ElkLayoutService, type LayoutResult } from '../services/elk-layout.service.js'
@@ -23,6 +23,7 @@ import '../components/code-panel.component.js'
             [workspace]="activeWorkspace"
             [sandboxResult]="sandboxResult"
             [style.width]="codePanelWidthStyle"
+            [(contentVersion)]="contentVersion"
         ></code-panel>
     `,
     styles: `
@@ -66,6 +67,8 @@ export class WorkspacePage extends RxElement {
     @state closureResults: Record<string, ClosureResult> = {}
     @state graphKinds: Record<string, GraphKind> = {}
     @state transitionKeys: Record<string, string[]> = {}
+    @state contentVersion = 0
+    private subs: Subscription[] = []
 
     get codePanelWidthStyle$(): Observable<string> {
         return this.codePanelWidth$.pipe(map((w: number) => `${w}px`))
@@ -96,17 +99,21 @@ export class WorkspacePage extends RxElement {
     }
 
     override onInit(): void {
-        this.router.route$.pipe(
+        this.subs.push(this.router.route$.pipe(
             map((route: string) => {
                 const prefix = '/workspace/'
                 return route.startsWith(prefix) ? route.slice(prefix.length) : ''
             }),
             distinctUntilChanged(),
-        ).subscribe((name: string) => {
-            if (name) this.loadWorkspace(name)
-        })
+            filter((name: string) => name !== ''),
+            tap((name: string) => this.loadWorkspace(name)),
+        ).subscribe())
 
-        this.addEventListener('content-change', () => this.handleContentChange())
+        this.subs.push(this.contentVersion$.pipe(
+            skip(1),
+            debounceTime(100),
+            tap(() => this.handleContentChange()),
+        ).subscribe())
     }
 
     private handleContentChange(): void {
@@ -150,6 +157,8 @@ export class WorkspacePage extends RxElement {
     }
 
     override onDestroy(): void {
+        for (const s of this.subs) s.unsubscribe()
+        this.subs = []
         this.sandbox.dispose()
     }
 }

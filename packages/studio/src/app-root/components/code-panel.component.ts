@@ -1,8 +1,8 @@
 import { Component, RxElement, state } from '@yaw-rx/core'
 import { RxFor } from '@yaw-rx/core/directives/rx-for'
 import * as monaco from 'monaco-editor'
-import type { Observable } from 'rxjs'
-import { map, combineLatest, distinctUntilChanged } from 'rxjs'
+import type { Observable, Subscription } from 'rxjs'
+import { map, tap, combineLatest, distinctUntilChanged } from 'rxjs'
 import type { Workspace, WorkspaceFile } from '../services/workspace.service.js'
 import type { SandboxResult } from '../services/sandbox.service.js'
 import dtsBundle from 'virtual:dts-bundle'
@@ -88,11 +88,12 @@ export class CodePanel extends RxElement {
     private editor: monaco.editor.IStandaloneCodeEditor | null = null
     private models = new Map<string, monaco.editor.ITextModel>()
     private modelDisposables: monaco.IDisposable[] = []
-    @state outputExpanded = false
-    @state outputHeight = 200
-    private ro: ResizeObserver | undefined
-    private debounceTimer: ReturnType<typeof setTimeout> | null = null
-    private static tsConfigured = false
+    @state outputExpanded = false;
+    @state outputHeight = 200;
+    @state contentVersion = 0;
+    private ro: ResizeObserver | undefined;
+    private subs: Subscription[] = [];
+    private static tsConfigured = false;
 
     override onRender(): void {
         if (!CodePanel.tsConfigured) {
@@ -115,34 +116,38 @@ export class CodePanel extends RxElement {
         this.ro = new ResizeObserver(() => this.editor?.layout())
         this.ro.observe(this.editorContainer)
 
-        combineLatest([this.library$, this.workspace$]).subscribe(
-            ([library, workspace]) => {
+        this.subs.push(combineLatest([this.library$, this.workspace$]).pipe(
+            tap(([library, workspace]) => {
                 this.rebuildModels(library)
                 const ws = library.find(w => w.name === workspace)
                 this.activeFiles = ws?.files ?? []
                 if (!this.activeTab && this.activeFiles.length > 0) {
                     this.activeTab = this.activeFiles[0].name
                 }
-            },
-        )
+            }),
+        ).subscribe())
 
-        this.activeTab$.pipe(distinctUntilChanged()).subscribe((tab: string) => {
-            const key = `${this.workspace}/${tab}`
-            const model = this.models.get(key)
-            if (model && this.editor) this.editor.setModel(model)
-        })
+        this.subs.push(this.activeTab$.pipe(
+            distinctUntilChanged(),
+            tap((tab: string) => {
+                const key = `${this.workspace}/${tab}`
+                const model = this.models.get(key)
+                if (model && this.editor) this.editor.setModel(model)
+            }),
+        ).subscribe())
 
-        this.addEventListener('toggle-output', () => this.toggleOutput())
+        this.addEventListener('toggle-output', () => this.toggleOutput());
     }
 
     override onDestroy(): void {
-        this.ro?.disconnect()
-        this.editor?.dispose()
-        for (const d of this.modelDisposables) d.dispose()
-        this.modelDisposables = []
-        for (const model of this.models.values()) model.dispose()
-        this.models.clear()
-        if (this.debounceTimer) clearTimeout(this.debounceTimer)
+        for (const s of this.subs) s.unsubscribe();
+        this.subs = [];
+        this.ro?.disconnect();
+        this.editor?.dispose();
+        for (const d of this.modelDisposables) d.dispose();
+        this.modelDisposables = [];
+        for (const model of this.models.values()) model.dispose();
+        this.models.clear();
     }
 
     get outputPanelHeight(): Observable<string> {
@@ -204,13 +209,6 @@ export class CodePanel extends RxElement {
         target.addEventListener('pointerup', onUp)
     }
 
-    private scheduleContentChange(): void {
-        if (this.debounceTimer) clearTimeout(this.debounceTimer)
-        this.debounceTimer = setTimeout(() => {
-            this.dispatchEvent(new CustomEvent('content-change', { bubbles: true, composed: true }))
-        }, 100)
-    }
-
     private rebuildModels(library: Workspace[]): void {
         for (const d of this.modelDisposables) d.dispose()
         this.modelDisposables = []
@@ -227,7 +225,7 @@ export class CodePanel extends RxElement {
                     : 'typescript'
                 const model = monaco.editor.createModel(file.content, lang, uri)
                 this.models.set(key, model)
-                this.modelDisposables.push(model.onDidChangeContent(() => this.scheduleContentChange()))
+                this.modelDisposables.push(model.onDidChangeContent(() => this.contentVersion++))
                 console.log(`model: ${uri.toString()} (${lang})`)
             }
         }
