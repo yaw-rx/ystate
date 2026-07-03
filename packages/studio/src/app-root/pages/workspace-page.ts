@@ -18,7 +18,7 @@ import '../components/code-panel.component.js'
             [transitionKeys]="transitionKeys"
         ></graph-canvas>
         <div class="divider" onpointerdown="startResize"></div>
-        <code-panel class="code-area"
+        <code-panel #codePanel class="code-area"
             [library]="library"
             [workspace]="activeWorkspace"
             [sandboxResult]="sandboxResult"
@@ -55,6 +55,8 @@ import '../components/code-panel.component.js'
 export class WorkspacePage extends RxElement {
     @Inject(Router) private readonly router!: Router
     @Inject(WorkspaceService) private readonly workspace!: WorkspaceService
+
+    codePanel!: CodePanel
 
     @state layoutResult: LayoutResult | null = null
     @state library: Workspace[] = []
@@ -108,13 +110,12 @@ export class WorkspacePage extends RxElement {
     }
 
     private handleContentChange(): void {
-        const codePanel = this.querySelector('code-panel') as CodePanel | null
         const ws = this.workspace.getWorkspace(this.activeWorkspace)
-        if (!ws || !codePanel) return
+        if (!ws || !this.codePanel) return
 
         const conceptFiles = ws.files
             .filter(f => this.workspace.kindOf(f.name) === 'concept')
-            .map(f => ({ name: f.name, content: codePanel.getContent(f.name) ?? f.content }))
+            .map(f => ({ name: f.name, content: this.codePanel.getContent(f.name) ?? f.content }))
 
         this.evaluateAndLayout(conceptFiles)
     }

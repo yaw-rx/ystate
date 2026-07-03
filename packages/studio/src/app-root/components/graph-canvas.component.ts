@@ -375,9 +375,12 @@ export class GraphCanvas extends RxElement {
 
         const cr = closureResults[node.graphKey]
         const nodeLocal = node.id.slice(node.graphKey.length + 1)
-        const isMissingNode = cr && !cr.success && cr.issues.some(i =>
-            (i.kind === 'missing-target' || i.kind === 'missing-source') && i.node === nodeLocal
-        )
+        let isMissingNode = false
+        if (cr?.success === false) {
+            isMissingNode = cr.issues.some(i =>
+                (i.kind === 'missing-target' || i.kind === 'missing-source') && i.node === nodeLocal
+            )
+        }
 
         const rect = this.svgEl('rect')
         this.setAttrs(rect, {
@@ -414,10 +417,13 @@ export class GraphCanvas extends RxElement {
         const keys = transitionKeys[edge.graphKey]
         const cr = closureResults[edge.graphKey]
         const direction = edge.on.indexOf('.') !== -1 ? edge.on.slice(edge.on.indexOf('.') + 1) : ''
-        const hasEdgeIssue = cr && !cr.success && cr.issues.some(i =>
-            ('edge' in i && i.edge === edge.edgeName) ||
-            (i.kind === 'incomplete-transition' && i.transition === transitionName && (i.field === '$' || i.field === direction))
-        )
+        let hasEdgeIssue = false
+        if (cr?.success === false) {
+            hasEdgeIssue = cr.issues.some(i =>
+                ('edge' in i && i.edge === edge.edgeName) ||
+                (i.kind === 'incomplete-transition' && i.transition === transitionName && (i.field === '$' || i.field === direction))
+            )
+        }
         const squiggly = kind === 'graph-set' || (keys && !keys.includes(transitionName)) || hasEdgeIssue
         const edgeColor = hasEdgeIssue ? '#c55' : cross ? '#8af' : '#9a9a9a'
 

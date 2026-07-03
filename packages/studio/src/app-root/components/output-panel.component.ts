@@ -1,5 +1,7 @@
 import { Component, RxElement, state } from '@yaw-rx/core'
 import { RxIf } from '@yaw-rx/core/directives/rx-if'
+import { RxFor } from '@yaw-rx/core/directives/rx-for'
+import { map, type Observable } from 'rxjs'
 import type { SandboxResult, ClosureResult, ClosureIssue, MachineSetValidationIssue } from '../services/sandbox.service.js'
 
 interface OutputEntry {
@@ -9,9 +11,19 @@ interface OutputEntry {
     issues: ClosureIssue[]
 }
 
+interface DetailEntry {
+    key: string
+    label: string
+    success: boolean
+    failure: boolean
+    icon: string
+    kind: string
+    issues: string[]
+}
+
 @Component({
     selector: 'output-panel',
-    directives: [RxIf],
+    directives: [RxIf, RxFor],
     template: `
         <div class="status-bar">
             <span class="status">
@@ -21,11 +33,22 @@ interface OutputEntry {
                 <span class="success">{{okText}}</span>
                 <span class="warn">{{warnText}}</span>
             </span>
-            <button #toggleBtn class="toggle" onclick="onToggle">
+            <button class="toggle" [class.expanded]="expanded" onclick="onToggle">
                 <span class="toggle-icon">&#9650;</span>
             </button>
         </div>
-        <div #details class="details"></div>
+        <div class="details" [style.display]="detailsDisplay">
+            <div rx-if="showError" class="issue">{{errorText}}</div>
+            <div rx-for="entry of detailEntries by key">
+                <div class="entry" [class.success]="entry.success" [class.failure]="entry.failure">{{entry.icon}} {{entry.label}} {{entry.kind}}</div>
+                <div rx-for="issue of entry.issues">
+                    <div class="issue">· {{issue}}</div>
+                </div>
+            </div>
+            <div rx-for="warning of warnings">
+                <div class="warning">· {{warning}}</div>
+            </div>
+        </div>
     `,
     styles: `
         :host {
@@ -110,45 +133,52 @@ export class OutputPanel extends RxElement {
     @state failText = ''
     @state okText = ''
     @state warnText = ''
+    @state showError = false
+    @state errorText = ''
+    @state detailEntries: DetailEntry[] = []
+    @state warnings: string[] = []
 
-    toggleBtn!: HTMLButtonElement
-    details!: HTMLDivElement
+    get detailsDisplay(): Observable<string> {
+        return this.expanded$.pipe(map((exp: boolean) => exp ? '' : 'none'))
+    }
 
-    override onRender(): void {
-        this.sandboxResult$.subscribe(r => this.updateStatus(r))
-        this.sandboxResult$.subscribe(r => this.renderDetails(r))
-        this.expanded$.subscribe((exp: boolean) => {
-            this.details.style.display = exp ? '' : 'none'
-            if (exp) {
-                this.toggleBtn.classList.add('expanded')
-            } else {
-                this.toggleBtn.classList.remove('expanded')
-            }
-        })
+    override onInit(): void {
+        this.sandboxResult$.subscribe((r: SandboxResult | null) => this.updateFromResult(r))
     }
 
     onToggle(): void {
         this.dispatchEvent(new CustomEvent('toggle-output', { bubbles: true, composed: true }))
     }
 
-    private updateStatus(result: SandboxResult | null): void {
+    private updateFromResult(result: SandboxResult | null): void {
         if (!result) {
             this.hasFailures = false
             this.allOk = false
             this.failText = ''
             this.okText = ''
             this.warnText = ''
+            this.showError = false
+            this.errorText = ''
+            this.detailEntries = []
+            this.warnings = []
             return
         }
 
-        if (!result.ok) {
+        if (result.ok === false) {
             this.hasFailures = true
             this.allOk = false
             this.failText = 'Evaluation error'
             this.okText = ''
             this.warnText = ''
+            this.showError = true
+            this.errorText = result.error
+            this.detailEntries = []
+            this.warnings = []
             return
         }
+
+        this.showError = false
+        this.errorText = ''
 
         const entries = this.buildEntries(result.closureResults)
         const failures = entries.filter(e => !e.success)
@@ -183,50 +213,24 @@ export class OutputPanel extends RxElement {
 
         const hasWarnings = entries.some(e => {
             const cr = result.closureResults[e.key]
-            return cr.success && cr.warnings.length > 0
+            return cr.success === true && cr.warnings.length > 0
         })
         this.warnText = hasWarnings ? ' with warnings' : ''
-    }
 
-    private renderDetails(result: SandboxResult | null): void {
-        this.details.innerHTML = ''
-        if (!result) return
+        this.detailEntries = entries.map(e => ({
+            key: e.key,
+            label: e.label,
+            success: e.success,
+            failure: !e.success,
+            icon: e.success ? '✓' : '✗',
+            kind: e.success ? 'closed' : 'failed',
+            issues: e.issues.map(i => this.formatIssue(i)),
+        }))
 
-        if (!result.ok) {
-            const div = document.createElement('div')
-            div.className = 'issue'
-            div.textContent = result.error
-            this.details.appendChild(div)
-            return
-        }
-
-        const entries = this.buildEntries(result.closureResults)
-        const allWarnings = entries.flatMap(e => {
+        this.warnings = entries.flatMap(e => {
             const cr = result.closureResults[e.key]
-            return cr.success ? cr.warnings : []
+            return cr.success === true ? cr.warnings.map(w => this.formatWarning(w)) : []
         })
-
-        for (const entry of entries) {
-            const div = document.createElement('div')
-            div.className = `entry ${entry.success ? 'success' : 'failure'}`
-            const kind = entry.success ? 'closed' : 'failed'
-            div.textContent = `${entry.success ? '✓' : '✗'} ${entry.label} ${kind}`
-            this.details.appendChild(div)
-
-            for (const issue of entry.issues) {
-                const issueDiv = document.createElement('div')
-                issueDiv.className = 'issue'
-                issueDiv.textContent = `· ${this.formatIssue(issue)}`
-                this.details.appendChild(issueDiv)
-            }
-        }
-
-        for (const warning of allWarnings) {
-            const div = document.createElement('div')
-            div.className = 'warning'
-            div.textContent = `· ${this.formatWarning(warning)}`
-            this.details.appendChild(div)
-        }
     }
 
     private buildEntries(results: Record<string, ClosureResult>): OutputEntry[] {
@@ -237,7 +241,7 @@ export class OutputPanel extends RxElement {
                 key,
                 label,
                 success: result.success,
-                issues: result.success ? [] : result.issues,
+                issues: result.success === false ? result.issues : [],
             }
         })
     }

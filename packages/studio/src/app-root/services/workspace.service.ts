@@ -48,11 +48,16 @@ export class WorkspaceService {
 
     addToLibrary(workspace: Workspace): void {
         if (this.library.some(w => w.name === workspace.name)) return;
-        this.library = [...this.library, workspace];
+        this.library.push(workspace);
+        this.library$.touch();
     }
 
     removeFromLibrary(name: string): void {
-        this.library = this.library.filter(w => w.name !== name);
+        const idx = this.library.findIndex(w => w.name === name);
+        if (idx !== -1) {
+            this.library.splice(idx, 1);
+            this.library$.touch();
+        }
     }
 
     getWorkspace(name: string): Workspace | undefined {
