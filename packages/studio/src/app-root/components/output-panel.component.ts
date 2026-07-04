@@ -65,15 +65,16 @@ interface DetailEntry {
             font-family: var(--font-mono);
             font-size: 0.75rem;
             flex-shrink: 0;
+            background: var(--bg-2);
         }
         .status {
             flex: 1;
-            color: #888;
+            color: var(--dim);
             padding: 0 12px;
         }
-        .status .error { color: #c55; }
-        .status .success { color: #5b5; }
-        .status .warn { color: #da0; }
+        .status .error { color: var(--error); }
+        .status .success { color: var(--success); }
+        .status .warn { color: var(--warn); }
         .toggle {
             background: none;
             border: none;
@@ -111,15 +112,15 @@ interface DetailEntry {
         .entry {
             padding-left: 12px;
         }
-        .entry.success { color: #5b5; }
-        .entry.failure { color: #c55; }
+        .entry.success { color: var(--success); }
+        .entry.failure { color: var(--error); }
         .issue {
-            color: #c55;
+            color: var(--error);
             padding-left: 24px;
             white-space: pre-wrap;
         }
         .warning {
-            color: #da0;
+            color: var(--warn);
             padding-left: 12px;
             white-space: pre-wrap;
         }

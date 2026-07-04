@@ -39,6 +39,9 @@
     --amber: #fa4;
     --gold: #ffcb6b;
     --salmon: #f78c6c;
+    --error: #c55;
+    --success: #5b5;
+    --warn: #da0;
 
     /* typography */
     --font-mono: monospace;
