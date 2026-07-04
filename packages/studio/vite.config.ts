@@ -2,10 +2,22 @@ import { defineConfig } from 'vite';
 import { viteTransform, viteAssets } from '@yaw-rx/vite';
 import { dtsBundlePlugin } from './plugins/vite-dts-bundle.js';
 
+const yawAssets = () => {
+    const plugin = viteAssets(['.css', '.html', '.wgsl']);
+    const origResolveId = plugin.resolveId as Function;
+    return {
+        ...plugin,
+        resolveId(source: string, importer: string | undefined) {
+            if (importer?.includes('node_modules')) return;
+            return origResolveId.call(this, source, importer);
+        },
+    };
+};
+
 export default defineConfig({
     root: '.',
     plugins: [
-        viteAssets(['.css', '.html', '.wgsl']),
+        yawAssets(),
         viteTransform(),
         dtsBundlePlugin({ packages: ['@yaw-rx/ystate', 'rxjs'] }),
     ],

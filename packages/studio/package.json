@@ -20,7 +20,8 @@
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
     "format": "prettier --check src/",
-    "format:fix": "prettier --write src/"
+    "format:fix": "prettier --write src/",
+    "build:ssg:deep-routes": "yaw-ssg dist public && node scripts/deep-routes.mjs public"
   },
   "dependencies": {
     "@yaw-rx/core": "^0.1.2",

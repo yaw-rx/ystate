@@ -1,0 +1,6 @@
+{
+  "typescript.tsdk": "node_modules/typescript/lib",
+  "typescript.enablePromptUseWorkspaceTsdk": true,
+  "yaw-rx.yaw.enable": true,
+  "js/ts.tsdk.path": "node_modules/typescript/lib"
+}
