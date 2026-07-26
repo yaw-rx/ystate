@@ -19,6 +19,20 @@ const BRAND_VAR_NAME: Record<StaticBrand, string> = {
     other: 'brand-other',
 }
 
+// Display order within a file's export list - every brand gets a distinct
+// rank, no ties: consts first, then functions, then graph-sets, machines
+// strictly last.
+const BRAND_ORDER: Record<StaticBrand, number> = {
+    const: 0,
+    observable: 1,
+    'behavior-subject': 2,
+    function: 3,
+    class: 4,
+    other: 5,
+    'graph-set': 6,
+    machine: 7,
+}
+
 const TOKEN_VAR_NAME: Record<string, string> = {
     keyword: 'token-keyword',
     className: 'token-type',
@@ -43,6 +57,7 @@ interface DisplayPartView {
 interface ExportRow {
     key: string
     name: string
+    brand: StaticBrand
     color: string
     isGraphSet: boolean
     isMachine: boolean
@@ -96,7 +111,8 @@ interface ExportRow {
                                 <rect x="8" y="8" width="8" height="8" rx="1" />
                             </g>
                             <g rx-if="row.isObservable">
-                                <path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2" />
+                                <path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0" />
+                                <circle cx="12" cy="12" r="3" />
                             </g>
                             <g rx-if="row.isBehaviorSubject">
                                 <path d="M16.247 7.761a6 6 0 0 1 0 8.478" />
@@ -115,10 +131,8 @@ interface ExportRow {
                                 <path d="M16 21h1a2 2 0 0 0 2-2v-5c0-1.1.9-2 2-2a2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1" />
                             </g>
                             <g rx-if="row.isConst">
-                                <path d="M8 21s-4-3-4-9 4-9 4-9" />
-                                <path d="M16 3s4 3 4 9-4 9-4 9" />
-                                <line x1="15" x2="9" y1="9" y2="15" />
-                                <line x1="9" x2="15" y1="9" y2="15" />
+                                <path d="M12 2v20" />
+                                <circle cx="12" cy="12" r="7" />
                             </g>
                         </svg>
                         <span class="export-name">{{row.name}}</span>
@@ -212,7 +226,9 @@ export class FileTreeEntry extends RxElement {
     }
 
     get exportRows$(): Observable<ExportRow[]> {
-        return this.file$.pipe(map(f => this.exportsOf(f).map(r => this.toRow(f.name, r))))
+        return this.file$.pipe(map(f => this.exportsOf(f)
+            .map(r => this.toRow(f.name, r))
+            .sort((a, b) => BRAND_ORDER[a.brand] - BRAND_ORDER[b.brand])))
     }
 
     toggle(): void {
@@ -224,27 +240,37 @@ export class FileTreeEntry extends RxElement {
     }
 
     private errorDiagnosticCount(file: WorkspaceFile): number {
-        const analyzed = isAnalyzedWorkspaceFile(file)
-        const count = analyzed ? file.analysis.diagnostics.filter(d => d.category === 'error').length : 0
-        console.log(`[FileTreeEntry] ${file.name} analyzed=${analyzed} errorCount=${count}`, analyzed ? file.analysis.diagnostics : undefined)
-        return count
+        return isAnalyzedWorkspaceFile(file) ? file.analysis.diagnostics.filter(d => d.category === 'error').length : 0
     }
 
-    // graph-set/machine come from the executed value via real guards
-    // (isIncidenceGraphSetMixin/isIncidenceMachineMixin) - that's ground
-    // truth, unlike the checker's hover text, which can't be trusted for
-    // this: an *unimplemented* graph-set's own `.implement()` method has
-    // `IncidenceMachineMixin` as its declared return type, so naive token
-    // matching on displayParts sees that name regardless of whether
-    // implement() was ever actually called. Static brand only decides
-    // what runtime can't tell apart (observable vs behavior-subject) or
-    // doesn't apply to (function/class/const).
+    // Runtime is ground truth for anything a guard can check on the actual
+    // executed value - graph-set/machine (isIncidenceGraphSetMixin/
+    // isIncidenceMachineMixin) and function (typeof value === 'function')
+    // are all guard-detected, so they win over the checker's hover text.
+    // That text can't be trusted for this: an *unimplemented* graph-set's
+    // own `.implement()` method has `IncidenceMachineMixin` as its declared
+    // return type, and a function returning an Observable has "Observable"
+    // in its own signature - naive token matching on displayParts finds
+    // those names regardless of what the export itself actually is.
+    // Static brand only fills in what runtime can't distinguish: Observable
+    // vs BehaviorSubject (both guard-detect as plain 'observable'), or
+    // what runtime has no sharper answer for (a 'plain-value' - class
+    // instance, const, other).
     private effectiveBrand(record: ExportRecord): StaticBrand {
         const runtime = record.runtime
-        if (runtime.status === 'evaluated' && (runtime.kind === 'graph-set' || runtime.kind === 'machine')) {
-            return runtime.kind
+        console.log(`[effectiveBrand] ${record.name} runtime=`, runtime, 'static.brand=', record.static.brand)
+        if (runtime.status !== 'evaluated') return record.static.brand
+
+        switch (runtime.kind) {
+            case 'graph-set':
+            case 'machine':
+            case 'function':
+                return runtime.kind
+            case 'observable':
+                return record.static.brand === 'behavior-subject' ? 'behavior-subject' : 'observable'
+            case 'plain-value':
+                return record.static.brand
         }
-        return record.static.brand
     }
 
     // Checker output often opens/closes with blank-text parts (a leading
@@ -268,6 +294,7 @@ export class FileTreeEntry extends RxElement {
         return {
             key: `${this.workspaceName}/${fileName}:${record.name}`,
             name: record.name,
+            brand,
             color: cssVar(BRAND_VAR_NAME[brand]),
             isGraphSet: brand === 'graph-set',
             isMachine: brand === 'machine',

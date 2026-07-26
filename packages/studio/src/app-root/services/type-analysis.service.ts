@@ -46,7 +46,23 @@ const DIAGNOSTIC_CATEGORY: Record<number, FileDiagnostic['category']> = {
     [ts.DiagnosticCategory.Message]: 'message',
 }
 
-type TypeScriptWorkerClient = Awaited<ReturnType<Awaited<ReturnType<typeof monaco.languages.typescript.getTypeScriptWorker>>>>
+// monaco-editor's own .d.ts marks `monaco.languages.typescript` as a
+// deprecated stub type (matches the `as any` cast code-panel.component.ts
+// already uses for the same namespace) - the real shape at runtime is
+// documented in monaco.d.ts's TypeScriptWorker interface, reproduced here.
+interface TypeScriptWorkerClient {
+    getSyntacticDiagnostics(fileName: string): Promise<ts.Diagnostic[]>
+    getSemanticDiagnostics(fileName: string): Promise<ts.Diagnostic[]>
+    getNavigationTree(fileName: string): Promise<ts.NavigationTree | undefined>
+    getQuickInfoAtPosition(fileName: string, position: number): Promise<ts.QuickInfo | undefined>
+}
+
+interface MonacoTypeScriptLanguage {
+    getTypeScriptWorker(): Promise<(...uris: monaco.Uri[]) => Promise<TypeScriptWorkerClient>>
+}
+
+const tsLanguage = (): MonacoTypeScriptLanguage =>
+    (monaco.languages as unknown as { typescript: MonacoTypeScriptLanguage }).typescript
 
 /**
  * The compile-time half of export analysis. Talks directly to the same
@@ -57,7 +73,7 @@ type TypeScriptWorkerClient = Awaited<ReturnType<Awaited<ReturnType<typeof monac
  */
 export class TypeAnalysisService {
     async analyzeWorkspace(ws: Workspace): Promise<Record<string, StaticFileManifest>> {
-        const getWorker = await monaco.languages.typescript.getTypeScriptWorker()
+        const getWorker = await tsLanguage().getTypeScriptWorker()
         const manifests: Record<string, StaticFileManifest> = {}
 
         for (const file of ws.files) {
@@ -84,7 +100,6 @@ export class TypeAnalysisService {
         ])
 
         const diagnostics = [...syntactic, ...semantic].map(d => this.formatDiagnostic(model, d))
-        console.log(`[TypeAnalysisService] ${uriString}`, diagnostics)
         const exports: StaticExportInfo[] = []
 
         for (const item of navTree?.childItems ?? []) {
@@ -108,13 +123,30 @@ export class TypeAnalysisService {
     }
 
     private classifyBrand(syntaxKind: string, displayParts: ts.SymbolDisplayPart[]): StaticBrand {
+        // Check what the declaration itself IS before ever looking at what
+        // its type mentions. A `function foo() {}` declaration is caught by
+        // syntaxKind, but most functions here are `const foo = () => ...`,
+        // which the navigation tree reports as a plain const - so also check
+        // whether the type immediately after `:` opens with `(`, i.e. the
+        // declaration's own type is a function type. Only once neither of
+        // those hold do we scan for a special return/value type name -
+        // otherwise a function returning an Observable would have "Observable"
+        // found in its own return-type annotation and get misclassified as
+        // one, regardless of what the export itself actually is.
+        if (syntaxKind === ts.ScriptElementKind.functionElement) return 'function'
+        if (syntaxKind === ts.ScriptElementKind.classElement) return 'class'
+
+        const colonIndex = displayParts.findIndex(p => p.kind === 'punctuation' && p.text === ':')
+        if (colonIndex !== -1) {
+            const next = displayParts.slice(colonIndex + 1).find(p => p.text.trim() !== '')
+            if (next?.text === '(') return 'function'
+        }
+
         for (const part of displayParts) {
             if ((part.kind === 'className' || part.kind === 'interfaceName' || part.kind === 'aliasName') && part.text in SPECIAL_TYPE_BRANDS) {
                 return SPECIAL_TYPE_BRANDS[part.text]
             }
         }
-        if (syntaxKind === ts.ScriptElementKind.functionElement) return 'function'
-        if (syntaxKind === ts.ScriptElementKind.classElement) return 'class'
         return 'const'
     }
 
