@@ -1,10 +1,11 @@
-import { Component, RxElement, state } from '@yaw-rx/core'
+import { Component, Inject, RxElement, state } from '@yaw-rx/core'
 import { RxFor } from '@yaw-rx/core/directives/rx-for'
 import * as monaco from 'monaco-editor'
 import type { Observable, Subscription } from 'rxjs'
 import { map, tap, combineLatest, distinctUntilChanged } from 'rxjs'
 import type { Workspace, WorkspaceFile } from '../services/workspace.service.js'
 import type { SandboxResult } from '../services/sandbox.service.js'
+import { MonacoModelService } from '../services/monaco-model.service.js'
 import dtsBundle from 'virtual:dts-bundle'
 import './output-panel.component.js'
 import type { OutputPanel } from './output-panel.component.js'
@@ -77,6 +78,8 @@ import type { OutputPanel } from './output-panel.component.js'
     `,
 })
 export class CodePanel extends RxElement {
+    @Inject(MonacoModelService) private readonly modelService!: MonacoModelService
+
     @state library: Workspace[] = []
     @state workspace = ''
     @state activeTab = ''
@@ -86,7 +89,7 @@ export class CodePanel extends RxElement {
     editorContainer!: HTMLDivElement
     outputPanel!: OutputPanel
     private editor: monaco.editor.IStandaloneCodeEditor | null = null
-    private models = new Map<string, monaco.editor.ITextModel>()
+    private wiredModels = new Set<string>()
     private modelDisposables: monaco.IDisposable[] = []
     @state outputExpanded = false;
     @state outputHeight = 200;
@@ -118,7 +121,7 @@ export class CodePanel extends RxElement {
 
         this.subs.push(combineLatest([this.library$, this.workspace$]).pipe(
             tap(([library, workspace]) => {
-                this.rebuildModels(library)
+                this.wireContentListeners(library)
                 const ws = library.find(w => w.name === workspace)
                 this.activeFiles = ws?.files ?? []
                 if (!this.activeTab && this.activeFiles.length > 0) {
@@ -130,8 +133,7 @@ export class CodePanel extends RxElement {
         this.subs.push(this.activeTab$.pipe(
             distinctUntilChanged(),
             tap((tab: string) => {
-                const key = `${this.workspace}/${tab}`
-                const model = this.models.get(key)
+                const model = this.modelService.getModel(this.workspace, tab)
                 if (model && this.editor) this.editor.setModel(model)
             }),
         ).subscribe())
@@ -146,8 +148,7 @@ export class CodePanel extends RxElement {
         this.editor?.dispose();
         for (const d of this.modelDisposables) d.dispose();
         this.modelDisposables = [];
-        for (const model of this.models.values()) model.dispose();
-        this.models.clear();
+        this.wiredModels.clear();
     }
 
     get outputPanelHeight(): Observable<string> {
@@ -165,8 +166,7 @@ export class CodePanel extends RxElement {
     }
 
     getContent(fileName: string): string | undefined {
-        const key = `${this.workspace}/${fileName}`
-        return this.models.get(key)?.getValue()
+        return this.modelService.getModel(this.workspace, fileName)?.getValue()
     }
 
     private layoutEditor(): void {
@@ -209,28 +209,17 @@ export class CodePanel extends RxElement {
         target.addEventListener('pointerup', onUp)
     }
 
-    private rebuildModels(library: Workspace[]): void {
-        for (const d of this.modelDisposables) d.dispose()
-        this.modelDisposables = []
-        for (const model of this.models.values()) model.dispose()
-        this.models.clear()
-
-        console.group('[code-panel] model registration')
+    private wireContentListeners(library: Workspace[]): void {
         for (const ws of library) {
             for (const file of ws.files) {
                 const key = `${ws.name}/${file.name}`
-                const uri = monaco.Uri.parse(`file:///${key}`)
-                const lang = file.name.endsWith('.html') ? 'html'
-                    : file.name.endsWith('.json') ? 'json'
-                    : 'typescript'
-                const model = monaco.editor.createModel(file.content, lang, uri)
-                this.models.set(key, model)
+                if (this.wiredModels.has(key)) continue
+                const model = this.modelService.getModel(ws.name, file.name)
+                if (!model) continue
+                this.wiredModels.add(key)
                 this.modelDisposables.push(model.onDidChangeContent(() => this.contentVersion++))
-                console.log(`model: ${uri.toString()} (${lang})`)
             }
         }
-        console.log(`${this.models.size} models total`)
-        console.groupEnd()
     }
 
     private static configureTypeScript(): void {

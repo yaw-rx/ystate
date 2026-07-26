@@ -25,7 +25,7 @@ interface DetailEntry {
     selector: 'output-panel',
     directives: [RxIf, RxFor],
     template: `
-        <div class="status-bar">
+        <div class="status-bar" onclick="onToggle">
             <span class="status">
                 <span rx-if="hasFailures" class="error">✗ </span>
                 <span rx-if="allOk" class="success">✓ </span>
@@ -33,7 +33,7 @@ interface DetailEntry {
                 <span class="success">{{okText}}</span>
                 <span class="warn">{{warnText}}</span>
             </span>
-            <button class="toggle" [class.expanded]="expanded" onclick="onToggle">
+            <button class="toggle" [class.expanded]="expanded">
                 <span class="toggle-icon">&#9650;</span>
             </button>
         </div>
@@ -66,6 +66,11 @@ interface DetailEntry {
             font-size: 0.75rem;
             flex-shrink: 0;
             background: var(--bg-2);
+            cursor: pointer;
+        }
+        .status-bar:hover .toggle {
+            color: var(--text);
+            background: var(--bg-4);
         }
         .status {
             flex: 1;
@@ -88,10 +93,6 @@ interface DetailEntry {
             align-items: center;
             transition: background 0.1s, color 0.1s;
             flex-shrink: 0;
-        }
-        .toggle:hover {
-            color: var(--text);
-            background: var(--bg-4);
         }
         .toggle-icon {
             font-size: 0.7rem;

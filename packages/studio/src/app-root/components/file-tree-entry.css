@@ -1,0 +1,133 @@
+:host {
+    display: block;
+
+    /* Brand colors for the export badge icons (lucide-static shapes). */
+    --brand-graph-set: #4ec9b0;
+    --brand-machine: #89d185;
+    --brand-observable: #4fc1ff;
+    --brand-behavior-subject: #4fc1ff;
+    --brand-function: #c586c0;
+    --brand-class: #e8a33d;
+    --brand-const: #9cdcfe;
+    --brand-other: #858585;
+
+    /* Approximates Monaco's default dark theme token colors, since
+       displayParts carries the same SymbolDisplayPart.kind values
+       Monaco's own hover renders. */
+    --token-keyword: #c586c0;
+    --token-type: #4ec9b0;
+    --token-param: #9cdcfe;
+    --token-function-name: #dcdcaa;
+    --token-string: #ce9178;
+    --token-number: #b5cea8;
+}
+
+.file-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.35rem 1rem;
+    color: var(--secondary);
+    cursor: pointer;
+    transition: background 0.1s, color 0.1s;
+}
+.file-row:hover {
+    background: var(--bg-4);
+    color: var(--text);
+}
+.chevron {
+    font-size: 0.6rem;
+    color: var(--dim);
+    transition: transform 0.15s;
+    display: inline-block;
+    width: 0.7rem;
+}
+.chevron.open {
+    transform: rotate(90deg);
+}
+.file-name {
+    flex: 1;
+}
+.file-diag-badge {
+    font-size: 0.6rem;
+    color: var(--error);
+    border: 1px solid var(--error);
+    border-radius: 50%;
+    width: 1rem;
+    height: 1rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.exports {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+.export-row {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.25rem 1rem 0.25rem 2.5rem;
+    color: var(--dim);
+    font-size: 0.72rem;
+}
+.export-row:hover {
+    background: var(--bg-4);
+    color: var(--text);
+}
+.badge {
+    flex-shrink: 0;
+}
+.export-row.error .export-name {
+    color: var(--error);
+}
+.export-row.warn .export-name {
+    color: var(--warn);
+}
+.export-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.tooltip {
+    display: none;
+    /* fixed, not absolute: anchored to the viewport via JS-tracked cursor
+       coordinates (captured once on entry - see enterRow), so it floats
+       freely over the whole page instead of being constrained by (or
+       adding scroll height to) the sidebar. Visibility is state-driven
+       (.visible), not :hover, so moving the cursor into the tooltip to
+       scroll it doesn't make it vanish. */
+    position: fixed;
+    z-index: 1000;
+    background: var(--bg-1);
+    border: var(--border-width) solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.5rem 0.6rem;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    max-width: 480px;
+    max-height: 60vh;
+    overflow-y: auto;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+.tooltip.visible {
+    display: block;
+}
+.sig {
+    color: var(--text);
+}
+/* pre-wrap lives only on the leaf token span, not .tooltip/.sig - putting it
+   on an ancestor would preserve the incidental newlines/indentation of the
+   template source itself (between tags), not just the real signature text. */
+.tok {
+    white-space: pre-wrap;
+}
+.docs {
+    margin-top: 0.4rem;
+    padding-top: 0.4rem;
+    border-top: var(--border-width) solid var(--border);
+    color: var(--dim);
+}

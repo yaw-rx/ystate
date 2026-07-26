@@ -2,7 +2,8 @@ import { Component, Inject, RxElement, state } from '@yaw-rx/core'
 import { Router } from '@yaw-rx/core/router'
 import { type Observable, type Subscription, map, tap, filter, distinctUntilChanged, skip, debounceTime } from 'rxjs'
 import { WorkspaceService, type Workspace } from '../services/workspace.service.js'
-import { SandboxService, type SandboxResult, type ClosureResult, type GraphKind } from '../services/sandbox.service.js'
+import type { SandboxResult, ClosureResult, GraphKind } from '../services/sandbox.service.js'
+import { WorkspaceEvaluationService } from '../services/workspace-evaluation.service.js'
 import { ElkLayoutService, type LayoutResult } from '../services/elk-layout.service.js'
 import type { CodePanel } from '../components/code-panel.component.js'
 import '../components/graph-canvas.component.js'
@@ -56,6 +57,7 @@ import '../components/code-panel.component.js'
 export class WorkspacePage extends RxElement {
     @Inject(Router) private readonly router!: Router
     @Inject(WorkspaceService) private readonly workspace!: WorkspaceService
+    @Inject(WorkspaceEvaluationService) private readonly evaluation!: WorkspaceEvaluationService
 
     codePanel!: CodePanel
 
@@ -74,7 +76,6 @@ export class WorkspacePage extends RxElement {
         return this.codePanelWidth$.pipe(map((w: number) => `${w}px`))
     }
 
-    private readonly sandbox = new SandboxService()
     private readonly elkLayout = new ElkLayoutService()
     private evalGeneration = 0
 
@@ -120,11 +121,16 @@ export class WorkspacePage extends RxElement {
         const ws = this.workspace.getWorkspace(this.activeWorkspace)
         if (!ws || !this.codePanel) return
 
-        const conceptFiles = ws.files
-            .filter(f => this.workspace.kindOf(f.name) === 'concept')
-            .map(f => ({ name: f.name, content: this.codePanel.getContent(f.name) ?? f.content }))
+        // Sync live editor content back into the workspace's own file objects
+        // first, so evaluate(ws) always reads the same authoritative content
+        // regardless of which trigger called it.
+        for (const file of ws.files) {
+            if (this.workspace.kindOf(file.name) !== 'concept') continue
+            const live = this.codePanel.getContent(file.name)
+            if (live !== undefined) file.content = live
+        }
 
-        this.evaluateAndLayout(conceptFiles)
+        this.evaluateAndLayout(ws)
     }
 
     private async loadWorkspace(name: string): Promise<void> {
@@ -134,16 +140,13 @@ export class WorkspacePage extends RxElement {
         this.library = this.workspace.library
         this.activeWorkspace = name
 
-        const conceptFiles = ws.files.filter(
-            f => this.workspace.kindOf(f.name) === 'concept',
-        )
-
-        await this.evaluateAndLayout(conceptFiles)
+        await this.evaluateAndLayout(ws)
     }
 
-    private async evaluateAndLayout(files: { name: string; content: string }[]): Promise<void> {
+    private async evaluateAndLayout(ws: Workspace): Promise<void> {
         const gen = ++this.evalGeneration
-        const result = await this.sandbox.evaluate(files)
+        const result = await this.evaluation.evaluate(ws)
+        this.workspace.library$.touch()
         if (gen !== this.evalGeneration) return
 
         this.sandboxResult = result
@@ -153,12 +156,11 @@ export class WorkspacePage extends RxElement {
         this.graphKinds = result.graphKinds
         this.transitionKeys = result.transitionKeys
         this.closureResults = result.closureResults
-        this.layoutResult = await this.elkLayout.layout(result.exports)
+        this.layoutResult = await this.elkLayout.layout(result.graphs)
     }
 
     override onDestroy(): void {
         for (const s of this.subs) s.unsubscribe()
         this.subs = []
-        this.sandbox.dispose()
     }
 }

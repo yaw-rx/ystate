@@ -3,7 +3,10 @@ import * as ystate from '@yaw-rx/ystate'
 import * as rxjs from 'rxjs'
 import type { IncidenceGraphSet, EdgeDef, NodeData, DepNodeRef } from '@yaw-rx/ystate'
 import { IncidenceGraphSetClosureError, IncidenceMachineClosureError } from '@yaw-rx/ystate'
-import type { SandboxCommand, SandboxResponse, SerializedEdge, SerializedGraphSet, GraphKind, ClosureResult, WorkspaceFile } from '../services/sandbox.service.js'
+import type { SandboxCommand, SandboxResponse, SerializedEdge, SerializedGraphSet, GraphKind, ClosureResult, WorkspaceFile, RuntimeKind } from '../services/sandbox.service.js'
+import { isObservable } from '../guards/is-observable.js'
+import { isIncidenceGraphSetMixin } from '../guards/is-incidence-graph-set-mixin.js'
+import { isIncidenceMachineMixin } from '../guards/is-incidence-machine-mixin.js'
 
 const BUILTIN_MODULES: Record<string, unknown> = {
     '@yaw-rx/ystate': ystate,
@@ -183,13 +186,15 @@ function serializeGraphSet(obj: unknown): SerializedGraphSet | null {
     }
 }
 
-function detectKind(value: unknown): GraphKind | null {
-    if (!value || typeof value !== 'object') return null
-    const obj = value as Record<string, unknown>
-    if (!('nodes' in obj) || !('edges' in obj)) return null
-    if (typeof obj.implement === 'function') return 'graph-set'
-    if ('transitions' in obj) return 'machine'
-    return null
+// Every export gets classified as exactly one RuntimeKind - never skipped,
+// never null. 'plain-value' is a real classification, not an absence of one.
+function detectKind(value: unknown): RuntimeKind {
+    console.log('export kind', value);
+    if (typeof value === 'function') return 'function'
+    if (isIncidenceGraphSetMixin(value)) return 'graph-set'
+    if (isIncidenceMachineMixin(value)) return 'machine'
+    if (isObservable(value)) return 'observable'
+    return 'plain-value'
 }
 
 // --- Command handlers ---
@@ -209,7 +214,8 @@ function handleEvaluate(files: WorkspaceFile[]): Extract<SandboxResponse, { comm
         modules[file.name] = fileExports
     }
 
-    const exports: Record<string, SerializedGraphSet> = {}
+    const runtimeKinds: Record<string, RuntimeKind> = {}
+    const graphs: Record<string, SerializedGraphSet> = {}
     const graphKinds: Record<string, GraphKind> = {}
     const transitionKeys: Record<string, string[]> = {}
 
@@ -218,11 +224,13 @@ function handleEvaluate(files: WorkspaceFile[]): Extract<SandboxResponse, { comm
         for (const [exportName, value] of Object.entries(fileExports)) {
             const key = `${file.name}:${exportName}`
             const kind = detectKind(value)
-            if (kind) {
+            runtimeKinds[key] = kind
+
+            if (kind === 'graph-set' || kind === 'machine') {
                 liveExports.set(key, value)
                 graphKinds[key] = kind
                 const serialized = serializeGraphSet(value)
-                if (serialized) exports[key] = serialized
+                if (serialized) graphs[key] = serialized
                 if (kind === 'machine') {
                     const obj = value as Record<string, unknown>
                     transitionKeys[key] = Object.keys(obj.transitions as Record<string, unknown>)
@@ -231,7 +239,7 @@ function handleEvaluate(files: WorkspaceFile[]): Extract<SandboxResponse, { comm
         }
     }
 
-    return { id: 0, command: 'evaluate', exports, graphKinds, transitionKeys }
+    return { id: 0, command: 'evaluate', runtimeKinds, graphs, graphKinds, transitionKeys }
 }
 
 function handleClose(key: string): ClosureResult {

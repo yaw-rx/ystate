@@ -17,6 +17,12 @@ export interface SerializedGraphSet {
 
 export type GraphKind = 'graph-set' | 'machine'
 
+// Every export the sandbox evaluates gets classified as one of these at runtime,
+// via guards on the live value. Only 'graph-set'/'machine' carry serialized graph
+// data and participate in closure. Static type info (signatures, generic args) is
+// a separate, compile-time concern - see TypeAnalysisService.
+export type RuntimeKind = GraphKind | 'observable' | 'function' | 'plain-value'
+
 export type ClosureIssue = IncidenceGraphSetClosureIssue | IncidenceMachineClosureIssue
 
 export type ClosureResult =
@@ -35,14 +41,14 @@ export type SandboxCommand =
     | { id: number; command: 'close'; key: string }
 
 export type SandboxResponse =
-    | { id: number; command: 'evaluate'; exports: Record<string, SerializedGraphSet>; graphKinds: Record<string, GraphKind>; transitionKeys: Record<string, string[]> }
+    | { id: number; command: 'evaluate'; runtimeKinds: Record<string, RuntimeKind>; graphs: Record<string, SerializedGraphSet>; graphKinds: Record<string, GraphKind>; transitionKeys: Record<string, string[]> }
     | { id: number; command: 'close'; key: string; result: ClosureResult }
     | { id: number; command: 'error'; error: string }
 
 // --- Public result types ---
 
 export type SandboxResult =
-    | { ok: true; exports: Record<string, SerializedGraphSet>; graphKinds: Record<string, GraphKind>; transitionKeys: Record<string, string[]>; closureResults: Record<string, ClosureResult> }
+    | { ok: true; runtimeKinds: Record<string, RuntimeKind>; graphs: Record<string, SerializedGraphSet>; graphKinds: Record<string, GraphKind>; transitionKeys: Record<string, string[]>; closureResults: Record<string, ClosureResult> }
     | { ok: false; error: string }
 
 // --- Service ---
@@ -92,11 +98,12 @@ export class SandboxService {
             const response = await this.send<Extract<SandboxResponse, { command: 'evaluate' }>>({ command: 'evaluate', files })
             const closureResults: Record<string, ClosureResult> = {}
             await Promise.all(
-                Object.keys(response.exports).map(async key => {
+                Object.keys(response.graphs).map(async key => {
                     closureResults[key] = await this.close(key)
                 }),
             )
-            return { ok: true, exports: response.exports, graphKinds: response.graphKinds, transitionKeys: response.transitionKeys, closureResults }
+            console.log('closureResults', closureResults);
+            return { ok: true, runtimeKinds: response.runtimeKinds, graphs: response.graphs, graphKinds: response.graphKinds, transitionKeys: response.transitionKeys, closureResults }
         } catch (e) {
             return { ok: false, error: e instanceof Error ? e.message : String(e) }
         }

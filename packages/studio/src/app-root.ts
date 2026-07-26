@@ -1,11 +1,13 @@
 import { Component, Inject, RxElement } from '@yaw-rx/core';
 import '@yaw-rx/core/router/outlet';
 import { WorkspaceService } from './app-root/services/workspace.service.js';
+import { WorkspaceEvaluationService } from './app-root/services/workspace-evaluation.service.js';
+import { MonacoModelService } from './app-root/services/monaco-model.service.js';
 import './app-root/components/side-bar.component.js';
 
 @Component({
     selector: 'app-root',
-    providers: [WorkspaceService],
+    providers: [WorkspaceEvaluationService, WorkspaceService, MonacoModelService],
     template: `
         <side-bar></side-bar>
         <rx-router-outlet></rx-router-outlet>
@@ -24,6 +26,11 @@ import './app-root/components/side-bar.component.js';
 })
 export class AppRoot extends RxElement {
     @Inject(WorkspaceService) private readonly workspace!: WorkspaceService;
+    // Injected purely to force MonacoModelService into existence (and its
+    // library$ subscription live) before addToLibrary runs below - models
+    // must exist for a workspace the instant it's added, not only once some
+    // component that happens to display it has mounted.
+    @Inject(MonacoModelService) private readonly models!: MonacoModelService;
 
     override onInit(): void {
         this.workspace.addToLibrary({

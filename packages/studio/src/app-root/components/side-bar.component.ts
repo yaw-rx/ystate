@@ -1,9 +1,10 @@
 import { Component, Inject, RxElement, state } from '@yaw-rx/core';
-import { type Observable, map } from 'rxjs';
+import { type Observable, map, of, combineLatest } from 'rxjs';
 import { Router } from '@yaw-rx/core/router';
 import { RxFor } from '@yaw-rx/core/directives/rx-for';
 import { RxIf } from '@yaw-rx/core/directives/rx-if';
 import { WorkspaceService, type Workspace, type WorkspaceFile } from '../services/workspace.service.js';
+import './file-tree-entry.component.js';
 
 @Component({
     selector: 'side-bar',
@@ -20,8 +21,7 @@ import { WorkspaceService, type Workspace, type WorkspaceFile } from '../service
             </div>
             <ul rx-for="file of currentFiles by name">
                 <li>
-                    <span class="file-icon">G</span>
-                    <span>{{file.name}}</span>
+                    <file-tree-entry [file]="file" [workspaceName]="currentName" [startExpanded]="alwaysTrue"></file-tree-entry>
                 </li>
             </ul>
         </section>
@@ -37,8 +37,7 @@ import { WorkspaceService, type Workspace, type WorkspaceFile } from '../service
                 <div rx-if="isExpanded(ws.name)">
                     <ul rx-for="file of ws.files by name">
                         <li class="lib-file">
-                            <span class="file-icon">G</span>
-                            <span>{{file.name}}</span>
+                            <file-tree-entry [file]="file" [workspaceName]="ws.name"></file-tree-entry>
                         </li>
                     </ul>
                 </div>
@@ -176,9 +175,16 @@ export class SideBar extends RxElement {
         return this.currentWorkspaceName$;
     }
 
+    get alwaysTrue$(): Observable<boolean> {
+        return of(true);
+    }
+
     get currentFiles$(): Observable<WorkspaceFile[]> {
-        return this.currentWorkspaceName$.pipe(
-            map(name => {
+        // Must react to library$ too, not just the workspace name - otherwise
+        // this never re-derives when WorkspaceEvaluationService rewrites a
+        // file's analysis (new export added, machine became a graph-set, etc).
+        return combineLatest([this.currentWorkspaceName$, this.workspace.library$]).pipe(
+            map(([name]) => {
                 const ws = this.workspace.getWorkspace(name);
                 return ws ? ws.files.filter(f => this.workspace.kindOf(f.name) === 'concept') : [];
             }),
