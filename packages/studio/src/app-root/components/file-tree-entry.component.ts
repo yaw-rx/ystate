@@ -1,9 +1,13 @@
 import { Component, RxElement, state } from '@yaw-rx/core'
 import { RxFor } from '@yaw-rx/core/directives/rx-for'
 import { RxIf } from '@yaw-rx/core/directives/rx-if'
-import { type Observable, type Subscription, map, first, tap } from 'rxjs'
-import { isAnalyzedWorkspaceFile, type WorkspaceFile, type ExportRecord } from '../services/workspace.service.js'
+import { type Observable, type Subscription, combineLatest, map, switchMap, first, tap } from 'rxjs'
+import type { RuntimeFile } from '../types/runtime-filesystem.types.js'
+import type { FileAnalysis, ExportRecord } from '../types/serialized-filesystem.types.js'
 import type { StaticBrand } from '../services/type-analysis.service.js'
+import type { StatusIconKind } from './status-icon.component.js'
+import { fileStatusIconKind$ } from '../utils/file-status.js'
+import './status-icon.component.js'
 import entryStyles from './file-tree-entry.css'
 
 const cssVar = (name: string): string => `var(--${name})`
@@ -66,8 +70,6 @@ interface ExportRow {
     isFunction: boolean
     isClass: boolean
     isConst: boolean
-    hasError: boolean
-    hasWarning: boolean
     parts: DisplayPartView[]
     docsText: string
 }
@@ -79,13 +81,13 @@ interface ExportRow {
     template: `
         <div class="file-row" onclick="toggle">
             <span class="chevron" [class.open]="expanded" rx-if="hasExports">&#9656;</span>
+            <status-icon [kind]="statusIconKind"></status-icon>
             <span class="file-name">{{fileName}}</span>
-            <span rx-if="hasDiagnosticErrors"><span class="file-diag-badge" title="file has compiler errors">!</span></span>
         </div>
         <div rx-if="expanded">
             <ul class="exports" rx-for="row of exportRows by key">
                 <li>
-                    <div class="export-row" [class.error]="row.hasError" [class.warn]="row.hasWarning" onpointerenter="enterRow($event, row.key)" onpointerleave="leaveRow">
+                    <div class="export-row" onpointerenter="enterRow($event, row.key)" onpointerleave="leaveRow">
                         <svg class="badge" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" [style.color]="row.color">
                             <g rx-if="row.isGraphSet">
                                 <circle cx="18" cy="5" r="3" />
@@ -149,7 +151,7 @@ interface ExportRow {
     `,
 })
 export class FileTreeEntry extends RxElement {
-    @state file!: WorkspaceFile
+    @state file!: RuntimeFile
     @state workspaceName = ''
     // Seeds the initial value of `expanded` once (see onInit) - a parent
     // re-render mustn't stomp a manual toggle, so this isn't `expanded`
@@ -217,30 +219,44 @@ export class FileTreeEntry extends RxElement {
         return this.file$.pipe(map(f => f.name))
     }
 
-    get hasExports$(): Observable<boolean> {
-        return this.file$.pipe(map(f => this.exportsOf(f).length > 0))
+    // The machine's own state$ is the single source for everything below -
+    // status, diagnostics, exports - never the file object's own fields
+    // read synchronously, since analysis genuinely changes independently
+    // of whether `file` itself gets reassigned.
+    private get state$(): Observable<{ node: string; data: unknown }> {
+        return this.file$.pipe(switchMap(f => f.machine.state$))
     }
 
-    get hasDiagnosticErrors$(): Observable<boolean> {
-        return this.file$.pipe(map(f => this.errorDiagnosticCount(f) > 0))
+    private get analysis$(): Observable<FileAnalysis | undefined> {
+        return this.state$.pipe(map(s => {
+            const data = s.data as { analysis?: FileAnalysis; stale?: FileAnalysis }
+            return data.analysis ?? data.stale
+        }))
+    }
+
+    // Always present, one icon, left of the name - same shape and position
+    // as the workspace-level rollup in side-bar. All failure kinds
+    // (evaluation, compiler diagnostics, closure) collapse into 'failed'
+    // via the shared classifier in utils/file-status.ts, which the
+    // workspace rollup also derives from - the two can't disagree.
+    get statusIconKind$(): Observable<StatusIconKind> {
+        return this.file$.pipe(switchMap(fileStatusIconKind$))
+    }
+
+    get hasExports$(): Observable<boolean> {
+        return this.analysis$.pipe(map(a => (a?.exports.length ?? 0) > 0))
     }
 
     get exportRows$(): Observable<ExportRow[]> {
-        return this.file$.pipe(map(f => this.exportsOf(f)
-            .map(r => this.toRow(f.name, r))
-            .sort((a, b) => BRAND_ORDER[a.brand] - BRAND_ORDER[b.brand])))
+        return combineLatest([this.file$, this.analysis$]).pipe(
+            map(([f, analysis]) => (analysis?.exports ?? [])
+                .map(r => this.toRow(f.name, r))
+                .sort((a, b) => BRAND_ORDER[a.brand] - BRAND_ORDER[b.brand])),
+        )
     }
 
     toggle(): void {
         this.expanded = !this.expanded
-    }
-
-    private exportsOf(file: WorkspaceFile): ExportRecord[] {
-        return isAnalyzedWorkspaceFile(file) ? file.analysis.exports : []
-    }
-
-    private errorDiagnosticCount(file: WorkspaceFile): number {
-        return isAnalyzedWorkspaceFile(file) ? file.analysis.diagnostics.filter(d => d.category === 'error').length : 0
     }
 
     // Runtime is ground truth for anything a guard can check on the actual
@@ -258,7 +274,6 @@ export class FileTreeEntry extends RxElement {
     // instance, const, other).
     private effectiveBrand(record: ExportRecord): StaticBrand {
         const runtime = record.runtime
-        console.log(`[effectiveBrand] ${record.name} runtime=`, runtime, 'static.brand=', record.static.brand)
         if (runtime.status !== 'evaluated') return record.static.brand
 
         switch (runtime.kind) {
@@ -286,16 +301,26 @@ export class FileTreeEntry extends RxElement {
 
     private toRow(fileName: string, record: ExportRecord): ExportRow {
         const runtime = record.runtime
-        const hasError = runtime.status === 'unevaluated'
-            || (runtime.status === 'evaluated' && runtime.closure?.success === false)
-        const hasWarning = runtime.status === 'evaluated' && runtime.closure?.success === true && runtime.closure.warnings.length > 0
+        const isGraphKind = runtime.status === 'evaluated' && (runtime.kind === 'graph-set' || runtime.kind === 'machine')
+        const hasError = isGraphKind && runtime.closure?.success === false
+        const hasWarning = isGraphKind && runtime.closure?.success === true && runtime.closure.warnings.length > 0
         const brand = this.effectiveBrand(record)
+
+        // Status lives on the icon, never the text - same convention as
+        // the file/workspace status icons. A machine/graph-set badge is a
+        // closure traffic light: red on closure error, amber on warnings,
+        // green when it closed clean. Non-graph brands keep their brand
+        // colour - they have no closure to report on.
+        const color = hasError ? cssVar('error')
+            : hasWarning ? cssVar('warn')
+            : isGraphKind ? cssVar('success')
+            : cssVar(BRAND_VAR_NAME[brand])
 
         return {
             key: `${this.workspaceName}/${fileName}:${record.name}`,
             name: record.name,
             brand,
-            color: cssVar(BRAND_VAR_NAME[brand]),
+            color,
             isGraphSet: brand === 'graph-set',
             isMachine: brand === 'machine',
             isObservable: brand === 'observable',
@@ -303,8 +328,6 @@ export class FileTreeEntry extends RxElement {
             isFunction: brand === 'function',
             isClass: brand === 'class',
             isConst: brand === 'const' || brand === 'other',
-            hasError,
-            hasWarning,
             parts: this.trimmedParts(record.static.displayParts),
             docsText: record.static.documentation.map(p => p.text).join(''),
         }

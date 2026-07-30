@@ -1,4 +1,8 @@
+import { Injectable } from '@yaw-rx/core'
 import type { NodeData, IncidenceGraphSetClosureIssue, IncidenceMachineClosureIssue, MachineSetValidationIssue } from '@yaw-rx/ystate'
+import type { QualifiedName } from '../types/runtime-filesystem.types.js'
+import { createSandboxWorkerMachine } from '../machines/sandbox-worker.machine.js'
+import { logMachineFailures } from '../utils/log-machine-failures.js'
 export type { MachineSetValidationIssue } from '@yaw-rx/ystate'
 
 // --- Shared types ---
@@ -30,7 +34,7 @@ export type ClosureResult =
     | { success: false; issues: ClosureIssue[] }
 
 export interface WorkspaceFile {
-    name: string
+    name: QualifiedName
     content: string
 }
 
@@ -53,56 +57,26 @@ export type SandboxResult =
 
 // --- Service ---
 
+@Injectable()
 export class SandboxService {
-    private worker: Worker | null = null
-    private nextId = 0
-    private pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>()
+    private readonly worker = createSandboxWorkerMachine()
+    private readonly failureLog = logMachineFailures('sandbox-worker', this.worker.runningMachine.state$, 'crashed')
 
-    private getWorker(): Worker {
-        if (!this.worker) {
-            this.worker = new Worker(
-                new URL('../workers/sandbox.worker.ts', import.meta.url),
-                { type: 'module' },
-            )
-            this.worker.addEventListener('message', (event: MessageEvent<SandboxResponse>) => {
-                const response = event.data
-                const entry = this.pending.get(response.id)
-                if (!entry) return
-                this.pending.delete(response.id)
-                if (response.command === 'error') {
-                    entry.reject(new Error(response.error))
-                } else {
-                    entry.resolve(response)
-                }
-            })
-            this.worker.addEventListener('error', (event: ErrorEvent) => {
-                for (const [, { reject }] of this.pending) {
-                    reject(new Error(event.message))
-                }
-                this.pending.clear()
-            })
-        }
-        return this.worker
-    }
-
-    private send<T extends SandboxResponse>(command: Record<string, unknown>): Promise<T> {
-        const id = this.nextId++
-        return new Promise((resolve, reject) => {
-            this.pending.set(id, { resolve, reject })
-            this.getWorker().postMessage({ id, ...command })
-        })
-    }
-
+    /**
+     * Turns one worker round-trip (`evaluate`) plus N more (`close`, one
+     * per graph/machine export found) into a single `SandboxResult` - this
+     * composition is a domain-level concern, not a transport one, so it
+     * stays here rather than inside the worker machine.
+     */
     async evaluate(files: WorkspaceFile[]): Promise<SandboxResult> {
         try {
-            const response = await this.send<Extract<SandboxResponse, { command: 'evaluate' }>>({ command: 'evaluate', files })
+            const response = await this.worker.send<Extract<SandboxResponse, { command: 'evaluate' }>>({ command: 'evaluate', files })
             const closureResults: Record<string, ClosureResult> = {}
             await Promise.all(
                 Object.keys(response.graphs).map(async key => {
                     closureResults[key] = await this.close(key)
                 }),
             )
-            console.log('closureResults', closureResults);
             return { ok: true, runtimeKinds: response.runtimeKinds, graphs: response.graphs, graphKinds: response.graphKinds, transitionKeys: response.transitionKeys, closureResults }
         } catch (e) {
             return { ok: false, error: e instanceof Error ? e.message : String(e) }
@@ -110,13 +84,11 @@ export class SandboxService {
     }
 
     private async close(key: string): Promise<ClosureResult> {
-        const response = await this.send<Extract<SandboxResponse, { command: 'close' }>>({ command: 'close', key })
+        const response = await this.worker.send<Extract<SandboxResponse, { command: 'close' }>>({ command: 'close', key })
         return response.result
     }
 
     dispose(): void {
-        this.worker?.terminate()
-        this.worker = null
-        this.pending.clear()
+        this.worker.dispose()
     }
 }

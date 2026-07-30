@@ -8,8 +8,10 @@ import tsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker'
 
 self.MonacoEnvironment = {
     getWorker(_: string, label: string) {
-        if (label === 'typescript' || label === 'javascript') return new tsWorker()
-        return new editorWorker()
+        const worker = (label === 'typescript' || label === 'javascript') ? new tsWorker() : new editorWorker()
+        worker.addEventListener('error', e => console.error(`[monaco-worker:${label}] error`, e))
+        worker.addEventListener('messageerror', e => console.error(`[monaco-worker:${label}] messageerror`, e))
+        return worker
     },
 }
 

@@ -25,6 +25,7 @@
   },
   "dependencies": {
     "@yaw-rx/core": "^0.1.2",
+    "@yaw-rx/ystate": "*",
     "elkjs": "^0.11.1",
     "lucide-static": "^1.27.0",
     "monaco-editor": "^0.55.1",

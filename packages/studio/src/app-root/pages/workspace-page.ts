@@ -1,14 +1,34 @@
 import { Component, Inject, RxElement, state } from '@yaw-rx/core'
 import { Router } from '@yaw-rx/core/router'
-import { type Observable, type Subscription, map, tap, filter, distinctUntilChanged, skip, debounceTime } from 'rxjs'
-import { WorkspaceService, type Workspace } from '../services/workspace.service.js'
-import type { SandboxResult, ClosureResult, GraphKind } from '../services/sandbox.service.js'
-import { WorkspaceEvaluationService } from '../services/workspace-evaluation.service.js'
+import { type Observable, type Subscription, combineLatest, from, map, tap, filter, distinctUntilChanged, switchMap, of, catchError, EMPTY } from 'rxjs'
+import { RuntimeFilesystemService } from '../services/runtime-filesystem.service.js'
+import type { RuntimeFile } from '../types/runtime-filesystem.types.js'
+import type { FileAnalysis } from '../types/serialized-filesystem.types.js'
+import type { SerializedGraphSet, ClosureResult, GraphKind, SandboxResult } from '../services/sandbox.service.js'
 import { ElkLayoutService, type LayoutResult } from '../services/elk-layout.service.js'
-import type { CodePanel } from '../components/code-panel.component.js'
 import '../components/graph-canvas.component.js'
 import '../components/code-panel.component.js'
 
+interface ActiveGraphData {
+    graphs: Record<string, SerializedGraphSet>
+    graphKinds: Record<string, GraphKind>
+    transitionKeys: Record<string, string[]>
+    closureResults: Record<string, ClosureResult>
+    /** Evaluation errors from files sitting in 'failed' - one entry per failed file, deduplicated (a broken pool fails every file with the same error). */
+    errors: string[]
+}
+
+/**
+ * There is no manual evaluation trigger here anymore, and no
+ * `evalGeneration` staleness guard - every file's machine drives its own
+ * analysis autonomously (see machines/workspace-file.machine.ts), and this
+ * page only derives the active workspace's graph-set/machine exports
+ * reactively off `RuntimeFilesystemService`. The staleness problem
+ * `evalGeneration` used to guard against is `switchMap`'s job now: a newer
+ * `activeGraphData$` emission cancels whatever ELK layout call was still
+ * in flight for the previous one, the same cancellation every other
+ * machine/service in this app gets from `enter()`'s teardown.
+ */
 @Component({
     selector: 'workspace-page',
     template: `
@@ -20,11 +40,9 @@ import '../components/code-panel.component.js'
         ></graph-canvas>
         <div class="divider" onpointerdown="startResize"></div>
         <code-panel #codePanel class="code-area"
-            [library]="library"
-            [workspace]="activeWorkspace"
+            [workspaceName]="activeWorkspace"
             [sandboxResult]="sandboxResult"
             [style.width]="codePanelWidthStyle"
-            [(contentVersion)]="contentVersion"
         ></code-panel>
     `,
     styles: `
@@ -56,20 +74,17 @@ import '../components/code-panel.component.js'
 })
 export class WorkspacePage extends RxElement {
     @Inject(Router) private readonly router!: Router
-    @Inject(WorkspaceService) private readonly workspace!: WorkspaceService
-    @Inject(WorkspaceEvaluationService) private readonly evaluation!: WorkspaceEvaluationService
-
-    codePanel!: CodePanel
+    @Inject(RuntimeFilesystemService) private readonly filesystem!: RuntimeFilesystemService
 
     @state layoutResult: LayoutResult | null = null
-    @state library: Workspace[] = []
     @state activeWorkspace = ''
     @state codePanelWidth = 420
-    @state sandboxResult: SandboxResult | null = null
     @state closureResults: Record<string, ClosureResult> = {}
     @state graphKinds: Record<string, GraphKind> = {}
     @state transitionKeys: Record<string, string[]> = {}
-    @state contentVersion = 0
+    // output-panel never reads runtimeKinds, only closureResults/graphKinds -
+    // this is a real SandboxResult shape for it, just not a full one.
+    @state sandboxResult: SandboxResult | null = null
     private subs: Subscription[] = []
 
     get codePanelWidthStyle$(): Observable<string> {
@@ -77,7 +92,6 @@ export class WorkspacePage extends RxElement {
     }
 
     private readonly elkLayout = new ElkLayoutService()
-    private evalGeneration = 0
 
     startResize(e: PointerEvent): void {
         e.preventDefault()
@@ -107,56 +121,96 @@ export class WorkspacePage extends RxElement {
             }),
             distinctUntilChanged(),
             filter((name: string) => name !== ''),
-            tap((name: string) => this.loadWorkspace(name)),
+            tap((name: string) => { this.activeWorkspace = name }),
         ).subscribe())
 
-        this.subs.push(this.contentVersion$.pipe(
-            skip(1),
-            debounceTime(100),
-            tap(() => this.handleContentChange()),
+        // Closure results and layout deliberately split: closure data
+        // applies on EVERY emission, before and independent of ELK. A graph
+        // that can't lay out (an edge referencing a commented-out node
+        // throws JsonImportException inside ELK) still carries the closure
+        // issues that explain exactly why - the canvas re-renders the
+        // previous layout with the new issues (the missing node still
+        // exists in the stale layout, flagged red by the fresh
+        // missing-target/missing-source issues) and the output panel shows
+        // them. Only layoutResult waits on ELK; a failed layout keeps the
+        // previous one rather than killing the subscription.
+        this.subs.push(this.activeGraphData$.pipe(
+            tap(({ graphs, graphKinds, transitionKeys, closureResults, errors }) => {
+                console.log(`[workspace-page] activeGraphData$ emitted: ${Object.keys(graphs).length} graph(s), ${errors.length} evaluation error(s), applying closure results`, { graphs, closureResults, errors })
+                this.graphKinds = graphKinds
+                this.transitionKeys = transitionKeys
+                this.closureResults = closureResults
+                // A failed evaluation (a syntax error breaks the whole
+                // pool) surfaces in the terminal as ok:false, same as the
+                // sandbox itself reporting it - not silently swallowed
+                // while stale closure results play innocent underneath.
+                this.sandboxResult = errors.length > 0
+                    ? { ok: false, error: errors.join('\n\n') }
+                    : { ok: true, runtimeKinds: {}, graphs, graphKinds, transitionKeys, closureResults }
+            }),
+            switchMap(data => from(this.elkLayout.layout(data.graphs)).pipe(
+                catchError(e => {
+                    console.error('[workspace-page] ELK layout failed, keeping previous layout (closure results already applied)', e)
+                    return EMPTY
+                }),
+            )),
+            tap(layout => {
+                console.log('[workspace-page] elkLayout.layout resolved, applying layout')
+                this.layoutResult = layout
+            }),
         ).subscribe())
     }
 
-    private handleContentChange(): void {
-        const ws = this.workspace.getWorkspace(this.activeWorkspace)
-        if (!ws || !this.codePanel) return
+    private get activeGraphData$(): Observable<ActiveGraphData> {
+        return this.activeWorkspace$.pipe(
+            switchMap(name => {
+                if (!name) return of<ReadonlyMap<string, RuntimeFile>>(new Map())
+                return this.filesystem.workspaces$.pipe(
+                    switchMap(workspaces => {
+                        const ws = workspaces.get(name)
+                        return ws ? ws.files$ : of<ReadonlyMap<string, RuntimeFile>>(new Map())
+                    }),
+                )
+            }),
+            switchMap(files => {
+                const entries = [...files.values()]
+                return entries.length === 0
+                    ? of<{ name: string; analysis: FileAnalysis | undefined; error: string | undefined }[]>([])
+                    : combineLatest(entries.map(f => f.machine.state$.pipe(
+                        map(s => {
+                            const data = s.data as { analysis?: FileAnalysis; stale?: FileAnalysis; error?: string }
+                            return {
+                                name: f.name,
+                                analysis: data.analysis ?? data.stale,
+                                error: s.node === 'failed' ? data.error : undefined,
+                            }
+                        }),
+                    )))
+            }),
+            map((fileAnalyses): ActiveGraphData => {
+                const graphs: Record<string, SerializedGraphSet> = {}
+                const graphKinds: Record<string, GraphKind> = {}
+                const transitionKeys: Record<string, string[]> = {}
+                const closureResults: Record<string, ClosureResult> = {}
+                const errors = [...new Set(fileAnalyses.map(f => f.error).filter((e): e is string => !!e))]
 
-        // Sync live editor content back into the workspace's own file objects
-        // first, so evaluate(ws) always reads the same authoritative content
-        // regardless of which trigger called it.
-        for (const file of ws.files) {
-            if (this.workspace.kindOf(file.name) !== 'concept') continue
-            const live = this.codePanel.getContent(file.name)
-            if (live !== undefined) file.content = live
-        }
+                for (const { name, analysis } of fileAnalyses) {
+                    if (!analysis) continue
+                    for (const record of analysis.exports) {
+                        const runtime = record.runtime
+                        if (runtime.status !== 'evaluated') continue
+                        if (runtime.kind !== 'graph-set' && runtime.kind !== 'machine') continue
+                        const key = `${name}:${record.name}`
+                        graphKinds[key] = runtime.kind
+                        if (runtime.serialized) graphs[key] = runtime.serialized
+                        if (runtime.closure) closureResults[key] = runtime.closure
+                        if (runtime.kind === 'machine' && runtime.transitionKeys) transitionKeys[key] = runtime.transitionKeys
+                    }
+                }
 
-        this.evaluateAndLayout(ws)
-    }
-
-    private async loadWorkspace(name: string): Promise<void> {
-        const ws = this.workspace.getWorkspace(name)
-        if (!ws) return
-
-        this.library = this.workspace.library
-        this.activeWorkspace = name
-
-        await this.evaluateAndLayout(ws)
-    }
-
-    private async evaluateAndLayout(ws: Workspace): Promise<void> {
-        const gen = ++this.evalGeneration
-        const result = await this.evaluation.evaluate(ws)
-        this.workspace.library$.touch()
-        if (gen !== this.evalGeneration) return
-
-        this.sandboxResult = result
-
-        if (!result.ok) return
-
-        this.graphKinds = result.graphKinds
-        this.transitionKeys = result.transitionKeys
-        this.closureResults = result.closureResults
-        this.layoutResult = await this.elkLayout.layout(result.graphs)
+                return { graphs, graphKinds, transitionKeys, closureResults, errors }
+            }),
+        )
     }
 
     override onDestroy(): void {

@@ -1,10 +1,34 @@
 import { Component, Inject, RxElement, state } from '@yaw-rx/core';
-import { type Observable, map, of, combineLatest } from 'rxjs';
+import { type Observable, map, of, combineLatest, switchMap } from 'rxjs';
 import { Router } from '@yaw-rx/core/router';
 import { RxFor } from '@yaw-rx/core/directives/rx-for';
 import { RxIf } from '@yaw-rx/core/directives/rx-if';
-import { WorkspaceService, type Workspace, type WorkspaceFile } from '../services/workspace.service.js';
+import { RuntimeFilesystemService } from '../services/runtime-filesystem.service.js';
+import type { RuntimeFile } from '../types/runtime-filesystem.types.js';
+import { fileKindOf } from '../utils/file-kind.js';
+import { fileStatusTier$, worstTier, type StatusTier } from '../utils/file-status.js';
+import type { StatusIconKind } from './status-icon.component.js';
 import './file-tree-entry.component.js';
+import './status-icon.component.js';
+
+interface LibraryWorkspaceView {
+    name: string
+    files: RuntimeFile[]
+    statusIconKind: StatusIconKind
+}
+
+const TIER_ICON: Record<StatusTier, StatusIconKind> = {
+    error: 'failed',
+    progress: 'analyzing',
+    ok: 'ok',
+}
+
+function workspaceStatusIconKind$(files: RuntimeFile[]): Observable<StatusIconKind> {
+    if (files.length === 0) return of<StatusIconKind>('ok')
+    return combineLatest(files.map(fileStatusTier$)).pipe(
+        map(tiers => TIER_ICON[worstTier(tiers)]),
+    )
+}
 
 @Component({
     selector: 'side-bar',
@@ -17,7 +41,10 @@ import './file-tree-entry.component.js';
         <section rx-if="hasCurrent" class="current">
             <div class="section-header">
                 <span class="section-label">Workspace</span>
-                <span class="current-name">{{currentName}}</span>
+                <span class="current-name-row">
+                    <status-icon [kind]="currentStatusIconKind"></status-icon>
+                    <span class="current-name">{{currentName}}</span>
+                </span>
             </div>
             <ul rx-for="file of currentFiles by name">
                 <li>
@@ -31,6 +58,7 @@ import './file-tree-entry.component.js';
             <div rx-for="ws of libraryWorkspaces by name" class="ws-entry">
                 <div class="ws-header" onclick="toggleExpanded(ws.name)">
                     <span class="ws-chevron" [class.open]="isExpanded(ws.name)">&#9656;</span>
+                    <status-icon [kind]="ws.statusIconKind"></status-icon>
                     <span>{{ws.name}}</span>
                     <button class="open-btn" onclick="openWorkspace(ws.name)">Open</button>
                 </div>
@@ -85,10 +113,15 @@ import './file-tree-entry.component.js';
         .section-header .section-label {
             padding: 0;
         }
+        .current-name-row {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            margin-top: 0.5rem;
+        }
         .current-name {
             color: var(--text);
             font-size: 0.85rem;
-            margin-top: 0.15rem;
         }
         ul {
             list-style: none;
@@ -163,7 +196,7 @@ import './file-tree-entry.component.js';
     `,
 })
 export class SideBar extends RxElement {
-    @Inject(WorkspaceService) private readonly workspace!: WorkspaceService;
+    @Inject(RuntimeFilesystemService) private readonly filesystem!: RuntimeFilesystemService;
     @Inject(Router) private readonly router!: Router;
     @state expandedName = ''
     @state currentWorkspaceName = ''
@@ -179,23 +212,33 @@ export class SideBar extends RxElement {
         return of(true);
     }
 
-    get currentFiles$(): Observable<WorkspaceFile[]> {
-        // Must react to library$ too, not just the workspace name - otherwise
-        // this never re-derives when WorkspaceEvaluationService rewrites a
-        // file's analysis (new export added, machine became a graph-set, etc).
-        return combineLatest([this.currentWorkspaceName$, this.workspace.library$]).pipe(
-            map(([name]) => {
-                const ws = this.workspace.getWorkspace(name);
-                return ws ? ws.files.filter(f => this.workspace.kindOf(f.name) === 'concept') : [];
+    get currentFiles$(): Observable<RuntimeFile[]> {
+        return combineLatest([this.currentWorkspaceName$, this.filesystem.workspaces$]).pipe(
+            switchMap(([name, workspaces]) => {
+                const ws = workspaces.get(name)
+                return ws ? ws.files$ : of(new Map<string, RuntimeFile>())
             }),
+            map(files => [...files.values()].filter(f => fileKindOf(f.name) === 'ts-file')),
         );
     }
 
-    get libraryWorkspaces$(): Observable<Workspace[]> {
-        return this.workspace.library$.pipe(
-            map(lib => lib
-                .filter(w => w.name !== this.currentWorkspaceName)
-                .map(w => ({ ...w, files: w.files.filter(f => this.workspace.kindOf(f.name) === 'concept') }))),
+    get currentStatusIconKind$(): Observable<StatusIconKind> {
+        return this.currentFiles$.pipe(switchMap(workspaceStatusIconKind$));
+    }
+
+    get libraryWorkspaces$(): Observable<LibraryWorkspaceView[]> {
+        return combineLatest([this.filesystem.workspaces$, this.currentWorkspaceName$]).pipe(
+            switchMap(([workspaces, current]) => {
+                const entries = [...workspaces.values()].filter(w => w.name !== current)
+                return entries.length === 0
+                    ? of<LibraryWorkspaceView[]>([])
+                    : combineLatest(entries.map(ws => ws.files$.pipe(
+                        map(files => [...files.values()].filter(f => fileKindOf(f.name) === 'ts-file')),
+                        switchMap(files => workspaceStatusIconKind$(files).pipe(
+                            map((statusIconKind): LibraryWorkspaceView => ({ name: ws.name, files, statusIconKind })),
+                        )),
+                    )))
+            }),
         );
     }
 
@@ -208,7 +251,6 @@ export class SideBar extends RxElement {
     }
 
     openWorkspace(name: string): void {
-        if (!this.workspace.getWorkspace(name)) return;
         this.currentWorkspaceName = name;
         this.expandedName = '';
         this.router.navigate('/workspace/' + name);

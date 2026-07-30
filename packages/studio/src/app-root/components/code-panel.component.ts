@@ -2,11 +2,11 @@ import { Component, Inject, RxElement, state } from '@yaw-rx/core'
 import { RxFor } from '@yaw-rx/core/directives/rx-for'
 import * as monaco from 'monaco-editor'
 import type { Observable, Subscription } from 'rxjs'
-import { map, tap, combineLatest, distinctUntilChanged } from 'rxjs'
-import type { Workspace, WorkspaceFile } from '../services/workspace.service.js'
+import { map, tap, combineLatest, switchMap, distinctUntilChanged, of } from 'rxjs'
+import { RuntimeFilesystemService } from '../services/runtime-filesystem.service.js'
+import type { RuntimeFile } from '../types/runtime-filesystem.types.js'
 import type { SandboxResult } from '../services/sandbox.service.js'
-import { MonacoModelService } from '../services/monaco-model.service.js'
-import dtsBundle from 'virtual:dts-bundle'
+import { fileKindOf } from '../utils/file-kind.js'
 import './output-panel.component.js'
 import type { OutputPanel } from './output-panel.component.js'
 
@@ -78,32 +78,22 @@ import type { OutputPanel } from './output-panel.component.js'
     `,
 })
 export class CodePanel extends RxElement {
-    @Inject(MonacoModelService) private readonly modelService!: MonacoModelService
+    @Inject(RuntimeFilesystemService) private readonly filesystem!: RuntimeFilesystemService
 
-    @state library: Workspace[] = []
-    @state workspace = ''
+    @state workspaceName = ''
     @state activeTab = ''
-    @state activeFiles: WorkspaceFile[] = []
+    @state activeFiles: RuntimeFile[] = []
     @state sandboxResult: SandboxResult | null = null
 
     editorContainer!: HTMLDivElement
     outputPanel!: OutputPanel
     private editor: monaco.editor.IStandaloneCodeEditor | null = null
-    private wiredModels = new Set<string>()
-    private modelDisposables: monaco.IDisposable[] = []
     @state outputExpanded = false;
     @state outputHeight = 200;
-    @state contentVersion = 0;
     private ro: ResizeObserver | undefined;
     private subs: Subscription[] = [];
-    private static tsConfigured = false;
 
     override onRender(): void {
-        if (!CodePanel.tsConfigured) {
-            CodePanel.tsConfigured = true
-            CodePanel.configureTypeScript()
-        }
-
         this.editor = monaco.editor.create(this.editorContainer, {
             theme: 'vs-dark',
             language: 'typescript',
@@ -119,22 +109,20 @@ export class CodePanel extends RxElement {
         this.ro = new ResizeObserver(() => this.editor?.layout())
         this.ro.observe(this.editorContainer)
 
-        this.subs.push(combineLatest([this.library$, this.workspace$]).pipe(
-            tap(([library, workspace]) => {
-                this.wireContentListeners(library)
-                const ws = library.find(w => w.name === workspace)
-                this.activeFiles = ws?.files ?? []
-                if (!this.activeTab && this.activeFiles.length > 0) {
-                    this.activeTab = this.activeFiles[0].name
+        this.subs.push(this.filesForWorkspace$.pipe(
+            tap((files: RuntimeFile[]) => {
+                this.activeFiles = files
+                if (!this.activeTab && files.length > 0) {
+                    this.activeTab = files[0].name
                 }
             }),
         ).subscribe())
 
-        this.subs.push(this.activeTab$.pipe(
+        this.subs.push(combineLatest([this.activeFiles$, this.activeTab$]).pipe(
+            map(([files, tab]) => files.find(f => f.name === tab)),
             distinctUntilChanged(),
-            tap((tab: string) => {
-                const model = this.modelService.getModel(this.workspace, tab)
-                if (model && this.editor) this.editor.setModel(model)
+            tap((file) => {
+                if (file && this.editor) this.editor.setModel(file.model)
             }),
         ).subscribe())
 
@@ -146,9 +134,21 @@ export class CodePanel extends RxElement {
         this.subs = [];
         this.ro?.disconnect();
         this.editor?.dispose();
-        for (const d of this.modelDisposables) d.dispose();
-        this.modelDisposables = [];
-        this.wiredModels.clear();
+    }
+
+    private get filesForWorkspace$(): Observable<RuntimeFile[]> {
+        return this.workspaceName$.pipe(
+            switchMap(name => {
+                if (!name) return of<ReadonlyMap<string, RuntimeFile>>(new Map())
+                return this.filesystem.workspaces$.pipe(
+                    switchMap(workspaces => {
+                        const ws = workspaces.get(name)
+                        return ws ? ws.files$ : of<ReadonlyMap<string, RuntimeFile>>(new Map())
+                    }),
+                )
+            }),
+            map(files => [...files.values()].filter(f => fileKindOf(f.name) === 'ts-file')),
+        )
     }
 
     get outputPanelHeight(): Observable<string> {
@@ -163,10 +163,6 @@ export class CodePanel extends RxElement {
 
     selectTab(name: string): void {
         this.activeTab = name
-    }
-
-    getContent(fileName: string): string | undefined {
-        return this.modelService.getModel(this.workspace, fileName)?.getValue()
     }
 
     private layoutEditor(): void {
@@ -207,46 +203,5 @@ export class CodePanel extends RxElement {
         }
         target.addEventListener('pointermove', onMove)
         target.addEventListener('pointerup', onUp)
-    }
-
-    private wireContentListeners(library: Workspace[]): void {
-        for (const ws of library) {
-            for (const file of ws.files) {
-                const key = `${ws.name}/${file.name}`
-                if (this.wiredModels.has(key)) continue
-                const model = this.modelService.getModel(ws.name, file.name)
-                if (!model) continue
-                this.wiredModels.add(key)
-                this.modelDisposables.push(model.onDidChangeContent(() => this.contentVersion++))
-            }
-        }
-    }
-
-    private static configureTypeScript(): void {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const tsLang = (monaco.languages as any).typescript
-        const defaults = tsLang.typescriptDefaults
-
-        defaults.setCompilerOptions({
-            target: 9 /* ES2022 */,
-            module: 199 /* NodeNext */,
-            moduleResolution: 99 /* NodeNext */,
-            strict: true,
-            esModuleInterop: true,
-            allowNonTsExtensions: true,
-        })
-
-        console.group('[code-panel] dts-bundle registration')
-        let count = 0
-        for (const [pkg, files] of Object.entries(dtsBundle)) {
-            const paths = Object.keys(files)
-            console.log(`${pkg}: ${paths.length} files`, paths.slice(0, 5))
-            for (const [path, content] of Object.entries(files)) {
-                defaults.addExtraLib(content, `file:///${path}`)
-                count++
-            }
-        }
-        console.log(`registered ${count} total .d.ts files`)
-        console.groupEnd()
     }
 }

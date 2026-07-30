@@ -295,10 +295,13 @@ export class GraphCanvas extends RxElement {
     ): void {
         const g = this.svgEl('g')
 
+        // Same traffic light as the export badge in file-tree-entry: red on
+        // closure error, amber on warnings, green only when closed clean.
         const result = closureResults[group.graphKey]
-        const borderColor = result
-            ? (result.success ? '#4a4' : '#a44')
-            : '#333'
+        const borderColor = !result ? '#333'
+            : result.success === false ? '#a44'
+            : result.warnings.length > 0 ? '#da0'
+            : '#4a4'
 
         const kind = graphKinds[group.graphKey]
 
