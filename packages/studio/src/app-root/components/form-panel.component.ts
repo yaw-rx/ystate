@@ -9,30 +9,35 @@ import type { RuntimeFile } from '../types/runtime-filesystem.types.js'
  * styles (css). Editing any writes straight to the model, the source of
  * truth the pool analysis and the run compiler both read.
  *
- * The two dividers between the sections are draggable: each sets the pixel
- * height of the section above it (the bottom section takes the remainder),
- * so all three are freely resizable.
+ * The three sections are sized by *proportion*, not fixed pixels: each is a
+ * flex item with `flex-basis: 0` and a grow ratio, so the triad always fills
+ * exactly its container and - crucially - shrinks with it. When the terminal
+ * below grows and squeezes this panel, all three sections shrink together
+ * rather than a fixed-height one overflowing under it.
+ *
+ * The two dividers between the sections are draggable: each redistributes the
+ * grow ratio between the two sections it sits between, leaving the third
+ * untouched.
  */
 @Component({
     selector: 'form-panel',
     template: `
-        <div class="section" [style.height]="templateHeight">
+        <div #templateSection class="section" [style.flex-grow]="ratio0">
             <div class="section-label">template</div>
             <div #templateContainer class="editor"></div>
         </div>
-        <div class="section" [style.height]="scriptHeight">
-            <div class="section-label handle" onpointerdown="startResize($event, 0)">script</div>
+        <div #scriptSection class="section" [style.flex-grow]="ratio1">
+            <div class="section-label handle" onpointerdown="startResize($event, 1)">script</div>
             <div #scriptContainer class="editor"></div>
         </div>
-        <div class="section fill">
-            <div class="section-label handle" onpointerdown="startResize($event, 1)">styles</div>
+        <div #stylesSection class="section" [style.flex-grow]="ratio2">
+            <div class="section-label handle" onpointerdown="startResize($event, 2)">styles</div>
             <div #stylesContainer class="editor"></div>
         </div>
     `,
     styles: `
-        :host { display: flex; flex-direction: column; height: 100%; }
-        .section { display: flex; flex-direction: column; min-height: 0; flex-shrink: 0; }
-        .section.fill { flex: 1; }
+        :host { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+        .section { display: flex; flex-direction: column; min-height: 0; flex-basis: 0; }
         .section-label {
             flex-shrink: 0;
             font-family: var(--font-mono);
@@ -65,9 +70,13 @@ import type { RuntimeFile } from '../types/runtime-filesystem.types.js'
 })
 export class FormPanel extends RxElement {
     @state file: RuntimeFile | null = null
-    // Pixel heights of the first two sections; the third fills the rest.
-    @state heights: [number, number] = [220, 220]
+    // Grow ratios for the three sections (relative, not pixels). Equal by
+    // default; a drag shifts weight between two neighbours.
+    @state ratios: [number, number, number] = [1, 1, 1]
 
+    templateSection!: HTMLDivElement
+    scriptSection!: HTMLDivElement
+    stylesSection!: HTMLDivElement
     templateContainer!: HTMLDivElement
     scriptContainer!: HTMLDivElement
     stylesContainer!: HTMLDivElement
@@ -75,12 +84,16 @@ export class FormPanel extends RxElement {
     private ro: ResizeObserver | undefined
     private subs: Subscription[] = []
 
-    get templateHeight$(): Observable<string> {
-        return this.heights$.pipe(map(h => `${h[0]}px`))
+    get ratio0$(): Observable<string> {
+        return this.ratios$.pipe(map(r => `${r[0]}`))
     }
 
-    get scriptHeight$(): Observable<string> {
-        return this.heights$.pipe(map(h => `${h[1]}px`))
+    get ratio1$(): Observable<string> {
+        return this.ratios$.pipe(map(r => `${r[1]}`))
+    }
+
+    get ratio2$(): Observable<string> {
+        return this.ratios$.pipe(map(r => `${r[2]}`))
     }
 
     override onRender(): void {
@@ -89,8 +102,8 @@ export class FormPanel extends RxElement {
         const styles = this.makeEditor(this.stylesContainer)
         this.editors = [template, script, styles]
 
-        // Each container resizes when its section height changes; relayout
-        // that editor rather than tracking heights a second time.
+        // Each container resizes when its section's share changes (a drag)
+        // or the whole panel resizes; just relayout that editor.
         this.ro = new ResizeObserver(() => this.editors.forEach(e => e.layout()))
         for (const c of [this.templateContainer, this.scriptContainer, this.stylesContainer]) this.ro.observe(c)
 
@@ -112,23 +125,35 @@ export class FormPanel extends RxElement {
         this.editors = []
     }
 
-    startResize(e: PointerEvent, index: 0 | 1): void {
+    /**
+     * Drag the boundary at the top of section `index` (1 = script, 2 =
+     * styles), moving weight between it and the section above. Works in real
+     * pixels for the two neighbours, then converts back to grow ratios so the
+     * split holds proportionally as the whole panel resizes.
+     */
+    startResize(e: PointerEvent, index: 1 | 2): void {
         e.preventDefault()
         const target = e.currentTarget as HTMLElement
         target.setPointerCapture(e.pointerId)
+
+        const sections = [this.templateSection, this.scriptSection, this.stylesSection]
+        const above = sections[index - 1]
+        const below = sections[index]
         const startY = e.clientY
-        const startH = this.heights[index]
-        const MIN = 60
+        const hAbove = above.getBoundingClientRect().height
+        const totalH = hAbove + below.getBoundingClientRect().height
+        const totalR = this.ratios[index - 1] + this.ratios[index]
+        const MIN = 40
 
         const onMove = (ev: PointerEvent) => {
-            // Never let this section push the pair past the host: leave room
-            // for the other fixed section plus a minimum for the fill section,
-            // so the triad can't grow over the terminal header below it.
-            const other = this.heights[index === 0 ? 1 : 0]
-            const max = Math.max(MIN, this.clientHeight - other - MIN)
-            const next: [number, number] = [...this.heights]
-            next[index] = Math.min(max, Math.max(MIN, startH + (ev.clientY - startY)))
-            this.heights = next
+            // Redistribute only between the two neighbours; their combined
+            // ratio (and every other section) stays put.
+            const newAbove = Math.max(MIN, Math.min(totalH - MIN, hAbove + (ev.clientY - startY)))
+            const rAbove = totalR * (newAbove / totalH)
+            const next: [number, number, number] = [...this.ratios]
+            next[index - 1] = rAbove
+            next[index] = totalR - rAbove
+            this.ratios = next
         }
         const onUp = () => {
             target.removeEventListener('pointermove', onMove)

@@ -46,8 +46,8 @@ function workspaceStatusIconKind$(files: RuntimeFile[]): Observable<StatusIconKi
                 <span class="section-label">Workspace</span>
                 <span class="current-name-row">
                     <status-icon [kind]="currentStatusIconKind"></status-icon>
-                    <span class="current-name" [style.display]="wsNameDisplay(currentWorkspaceName)" ondblclick="startRenameWorkspace($event, currentWorkspaceName)" title="Double-click to rename">{{currentName}}</span>
-                    <input class="ws-rename" [style.display]="wsEditDisplay(currentWorkspaceName)" [value]="currentName" onkeydown="onRenameWorkspaceKey($event, currentWorkspaceName)" onblur="cancelRenameWorkspace" />
+                    <span class="current-name" [style.display]="currentNameDisplay" ondblclick="startRenameActiveWorkspace($event)" title="Double-click to rename">{{currentName}}</span>
+                    <input class="ws-rename" [style.display]="currentNameEditDisplay" onkeydown="onRenameActiveKey($event)" onblur="cancelRenameWorkspace" />
                 </span>
             </div>
             <ul rx-for="file of currentFiles by name">
@@ -68,7 +68,7 @@ function workspaceStatusIconKind$(files: RuntimeFile[]): Observable<StatusIconKi
                     <span class="ws-chevron" [class.open]="isExpanded(ws.name)" onclick="toggleExpanded(ws.name)">&#9656;</span>
                     <status-icon [kind]="ws.statusIconKind"></status-icon>
                     <span class="ws-name" [style.display]="wsNameDisplay(ws.name)" onclick="toggleExpanded(ws.name)" ondblclick="startRenameWorkspace($event, ws.name)">{{ws.name}}</span>
-                    <input class="ws-rename" [style.display]="wsEditDisplay(ws.name)" [value]="ws.name" onkeydown="onRenameWorkspaceKey($event, ws.name)" onblur="cancelRenameWorkspace" />
+                    <input class="ws-rename" [style.display]="wsEditDisplay(ws.name)" onkeydown="onRenameWorkspaceKey($event, ws.name)" onblur="cancelRenameWorkspace" />
                     <span class="ws-actions">
                         <button class="open-btn" onclick="openWorkspace(ws.name)">Open</button>
                         <button class="icon-btn" onclick="startRenameWorkspace($event, ws.name)" title="Rename">&#9998;</button>
@@ -390,6 +390,36 @@ export class SideBar extends RxElement {
 
     // --- Renaming a workspace (double-click the name, or the ✎ button) ------
 
+    // The active workspace can't pass its name as a template arg the way a
+    // library row passes `ws.name` (a loop var), so it gets dedicated,
+    // no-arg bindings that read `currentWorkspaceName` directly.
+    get currentNameDisplay$(): Observable<string> {
+        return combineLatest([this.editingWorkspace$, this.currentWorkspaceName$]).pipe(
+            map(([editing, current]) => editing !== '' && editing === current ? 'none' : ''),
+        );
+    }
+
+    get currentNameEditDisplay$(): Observable<string> {
+        return combineLatest([this.editingWorkspace$, this.currentWorkspaceName$]).pipe(
+            map(([editing, current]) => editing !== '' && editing === current ? '' : 'none'),
+        );
+    }
+
+    startRenameActiveWorkspace(e: Event): void {
+        this.editingWorkspace = this.currentWorkspaceName;
+        const container = (e.currentTarget as HTMLElement).closest('.current-name-row');
+        requestAnimationFrame(() => {
+            const input = container?.querySelector('.ws-rename') as HTMLInputElement | null;
+            if (input) input.value = this.currentWorkspaceName;
+            input?.focus();
+            input?.select();
+        });
+    }
+
+    onRenameActiveKey(e: KeyboardEvent): void {
+        this.onRenameWorkspaceKey(e, this.currentWorkspaceName);
+    }
+
     wsNameDisplay(name: string): Observable<string> {
         return this.editingWorkspace$.pipe(map(e => e === name ? 'none' : ''));
     }
@@ -405,6 +435,7 @@ export class SideBar extends RxElement {
         const container = (e.currentTarget as HTMLElement).closest('.ws-header, .current-name-row');
         requestAnimationFrame(() => {
             const input = container?.querySelector('.ws-rename') as HTMLInputElement | null;
+            if (input) input.value = name;
             input?.focus();
             input?.select();
         });

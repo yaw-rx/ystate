@@ -9,18 +9,18 @@ import type { SerializedWorkspace } from './types/serialized-filesystem.types.js
  * anything calling `addWorkspace` from outside could race ahead of it).
  */
 export const defaultWorkspaces: SerializedWorkspace[] = [
-    {
-        name: 'heater',
-        manifest: {
-            name: 'heater',
-            concepts: ['heater.ts'],
-            metadata: {},
-        },
-        files: [
-            {
-                name: 'heater.ts',
-                status: 'unanalyzed',
-                content: `import { define } from '@yaw-rx/ystate'
+  {
+    name: 'heater',
+    manifest: {
+      name: 'heater',
+      concepts: ['heater.ts'],
+      metadata: {},
+    },
+    files: [
+      {
+        name: 'heater.ts',
+        status: 'unanalyzed',
+        content: `import { define } from '@yaw-rx/ystate'
 import { BehaviorSubject, Subject, filter } from 'rxjs'
 
 // Current room temperature (degrees C)
@@ -82,12 +82,12 @@ export const Heater = define({
     next: () => ({}),
   },
 })`,
-            },
-            {
-                name: 'heater.form',
-                status: 'unanalyzed',
-                sections: {
-                    template: `<div class="panel">
+      },
+      {
+        name: 'heater.form',
+        status: 'unanalyzed',
+        sections: {
+          template: `<div class="panel">
   <p class="temp">{{temperatureDisplay}}&deg;C</p>
   <div class="controls">
     <button onclick="turnOnSignal.next()">heater on</button>
@@ -103,13 +103,13 @@ export const Heater = define({
   </div>
   <rx-graph [config]="graphConfig" [series]="graphSeries"></rx-graph>
 </div>`,
-                    styles: `.panel { display: flex; flex-direction: column; gap: 1rem; padding: 1.5rem; font-family: var(--font-mono); color: var(--text); }
+          styles: `.panel { display: flex; flex-direction: column; gap: 1rem; padding: 1.5rem; font-family: var(--font-mono); color: var(--text); }
 .temp { margin: 0; font-size: 2rem; color: var(--accent); }
 .controls, .limits { display: flex; gap: 0.5rem; align-items: center; font-size: 0.8rem; }
 button { background: var(--bg-4); border: 1px solid var(--border); color: var(--text); font-family: var(--font-mono); padding: 0.3rem 0.7rem; border-radius: var(--radius-sm); cursor: pointer; }
 button:hover { border-color: var(--accent); color: var(--accent); }`,
-                },
-                content: `import { timer, combineLatest, scan, map, mergeMap, take, takeUntil, filter, withLatestFrom } from 'rxjs'
+        },
+        content: `import { timer, combineLatest, scan, map, mergeMap, take, takeUntil, filter, withLatestFrom } from 'rxjs'
 import { Heater, temperature$, turnOnSignal, turnOffSignal, upperLimitT$, lowerLimitT$ } from './heater.js'
 
 // --- Simulation Constants ---
@@ -189,22 +189,22 @@ export const init = () => {
   ).subscribe(t => temperature$.next(t))
   return { heater }
 }`,
-            },
-        ],
+      },
+    ],
+  },
+  {
+    name: 'checkout',
+    manifest: {
+      name: 'checkout',
+      concepts: ['auth.ts', 'payment.ts', 'basket.ts'],
+      metadata: {},
     },
-    {
-        name: 'checkout',
-        manifest: {
-            name: 'checkout',
-            concepts: ['auth.ts', 'payment.ts', 'basket.ts'],
-            metadata: {},
-        },
-        files: [
-            {
-                name: 'auth.ts',
-                status: 'unanalyzed',
-                content: `import { define } from '@yaw-rx/ystate'
-import { timer, mergeMap, throwError, of } from 'rxjs'
+    files: [
+      {
+        name: 'auth.ts',
+        status: 'unanalyzed',
+        content: `import { define } from '@yaw-rx/ystate'
+import { Subject, timer, mergeMap, throwError, of } from 'rxjs'
 
 const loginErrors = ['auth server unreachable', 'invalid credentials', 'account locked', 'rate limited']
 const simulateLogin = () => timer(2000).pipe(
@@ -214,7 +214,10 @@ const simulateLogin = () => timer(2000).pipe(
   )
 )
 
-const simulateSessionTimeout = () => timer(10000)
+// Signals pushed by the UI forms
+export const loginRequest = new Subject<void>()
+export const logoutRequest = new Subject<void>()
+export const retryRequest = new Subject<void>()
 
 export const Auth = define({
   nodes: {
@@ -227,36 +230,33 @@ export const Auth = define({
     loginError: { from: 'loggedOut', to: 'loginFailed', on: 'authenticate.error' },
     retry: { from: 'loginFailed', to: 'loggedOut', on: 'retryLogin.next' },
     expire: { from: 'authenticated', to: 'loggedOut', on: 'sessionExpire.next' },
+    logout: { from: 'authenticated', to: 'loggedOut', on: 'logoutSignal.next' },
   },
 }).implement({
-  // simulateLogin() can error for various reasons (server unreachable,
-  // invalid credentials, account locked, rate limited), so authenticate
-  // needs error edges in the graph to handle it. Without them the machine
-  // would throw MachineUnhandledError.
   authenticate: {
-    $: () => simulateLogin(),
+    $: () => loginRequest.pipe(mergeMap(() => simulateLogin())),
     next: (result) => ({ token: result.token, authenticatedAt: Date.now() }),
     error: (err) => ({ reason: String(err) }),
   },
-  // timer(2000) is a simple delay that cannot error or complete without
-  // emission, so no error or complete edges are needed.
   retryLogin: {
-    $: () => timer(2000),
+    $: () => retryRequest.pipe(mergeMap(() => timer(800))),
     next: () => ({ since: Date.now() }),
   },
-  // simulateSessionTimeout() is a simple timer that cannot error or
-  // complete without emission.
   sessionExpire: {
-    $: () => simulateSessionTimeout(),
+    $: () => timer(10000),
     next: (_result, _dest, source) => ({ since: source.authenticatedAt }),
   },
+  logoutSignal: {
+    $: () => logoutRequest,
+    next: () => ({ since: Date.now() }),
+  },
 })`,
-            },
-            {
-                name: 'payment.ts',
-                status: 'unanalyzed',
-                content: `import { define } from '@yaw-rx/ystate'
-import { timer, mergeMap, throwError, of, EMPTY } from 'rxjs'
+      },
+      {
+        name: 'payment.ts',
+        status: 'unanalyzed',
+        content: `import { define } from '@yaw-rx/ystate'
+import { Subject, timer, mergeMap, throwError, of, EMPTY } from 'rxjs'
 
 const simulatePayment = () => timer(3000).pipe(
   mergeMap(() => {
@@ -266,6 +266,8 @@ const simulatePayment = () => timer(3000).pipe(
     return EMPTY
   })
 )
+
+export const resetRequest = new Subject<void>()
 
 export const Payment = define({
   nodes: {
@@ -278,24 +280,28 @@ export const Payment = define({
     approve: { from: 'processing', to: 'approved', on: 'process.next' },
     decline: { from: 'processing', to: 'declined', on: 'process.error' },
     stall: { from: 'processing', to: 'stalled', on: 'process.complete' },
+    reset: { from: 'approved', to: 'processing', on: 'reset.next' },
+    resetDeclined: { from: 'declined', to: 'processing', on: 'reset.next' },
+    resetStalled: { from: 'stalled', to: 'processing', on: 'reset.next' },
   },
 }).implement({
-  // simulatePayment() can emit (approved), error (declined), or complete
-  // without emission (stalled). All three outcomes are handled by edges
-  // in the graph, so next, error, and complete are all required.
   process: {
     $: () => simulatePayment(),
     next: (result) => ({ confirmedAt: Date.now(), txId: result.txId }),
     error: (err) => ({ reason: String(err) }),
     complete: (_result, _dest, source) => ({ orderId: source.orderId }),
   },
+  reset: {
+    $: () => resetRequest,
+    next: () => ({ orderId: '' }),
+  },
 })`,
-            },
-            {
-                name: 'basket.ts',
-                status: 'unanalyzed',
-                content: `import { define } from '@yaw-rx/ystate'
-import { timer, mergeMap, throwError, of, withLatestFrom, filter } from 'rxjs'
+      },
+      {
+        name: 'basket.ts',
+        status: 'unanalyzed',
+        content: `import { define } from '@yaw-rx/ystate'
+import { Subject, timer, mergeMap, throwError, of, withLatestFrom, filter } from 'rxjs'
 import { Auth } from './auth.js'
 import { Payment } from './payment.js'
 
@@ -307,6 +313,9 @@ const simulateAddItem = () => timer(500).pipe(
 )
 
 const simulateItemConfirmation = () => timer(1000)
+
+export const addItemRequest = new Subject<void>()
+export const checkoutRequest = new Subject<void>()
 
 export const Basket = define({
   nodes: {
@@ -328,32 +337,174 @@ export const Basket = define({
     checkout: { from: 'hasItems', to: refs.payment.nodes.processing, on: 'checkout.next' },
   }),
 }).implement({
-  // simulateAddItem() can throw 'item out of stock', so addItem needs
-  // error edges in the graph to handle it. Without them the machine
-  // would throw MachineUnhandledError.
   addItem: {
-    $: () => simulateAddItem(),
+    $: () => addItemRequest.pipe(mergeMap(() => simulateAddItem())),
     next: (result, _dest, _source, edge) => ({ itemId: \`\${result.itemId}-via-\${edge}\` }),
     error: (err, dest, _source, edge) => ({ error: \`\${edge}: \${String(err)}\`, items: dest.items }),
   },
-  // simulateItemConfirmation() is a simple timer that cannot error or
-  // complete without emission, so no error or complete edges are needed.
   itemAdded: {
     $: () => simulateItemConfirmation(),
     next: (_result, dest, source) => ({ items: [...dest.items, source.itemId] }),
   },
-  // checkout waits for auth to be authenticated before emitting. The
-  // observable cannot error or complete, so no error or complete
-  // edges are needed.
   checkout: {
-    $: (deps) => timer(500).pipe(
-      withLatestFrom(deps.auth.state$),
-      filter(([_, auth]) => auth.node === 'authenticated'),
+    $: (deps) => checkoutRequest.pipe(
+      mergeMap(() => timer(500).pipe(
+        withLatestFrom(deps.auth.state$),
+        filter(([_, auth]) => auth.node === 'authenticated'),
+      ))
     ),
     next: (_result, _dest, _source, edge) => ({ orderId: \`ORD-\${Date.now()}-\${edge}\` }),
   },
 })`,
-            },
-        ],
-    },
+      },
+      {
+        name: 'auth.form',
+        status: 'unanalyzed',
+        sections: {
+          template: `<div class="auth-panel">
+  <h3>Authentication</h3>
+  <p class="state">State: <span class="badge">{{authState}}</span></p>
+  <p class="token">Token: <code>{{authToken}}</code></p>
+  <p class="error">Error: {{authError}}</p>
+  <div class="controls">
+    <button onclick="loginRequest.next()">Login</button>
+    <button onclick="logoutRequest.next()">Logout</button>
+    <button onclick="retryRequest.next()">Retry</button>
+  </div>
+</div>`,
+          styles: `.auth-panel { display: flex; flex-direction: column; gap: 0.75rem; padding: 1.5rem; font-family: var(--font-mono); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); max-width: 420px; }
+h3 { margin: 0 0 0.5rem; color: var(--accent); }
+p { margin: 0.25rem 0; font-size: 0.9rem; }
+.badge { background: var(--bg-4); padding: 0.2rem 0.6rem; border-radius: var(--radius-sm); font-size: 0.8rem; text-transform: uppercase; }
+.token code { background: var(--bg-4); padding: 0.2rem 0.4rem; border-radius: var(--radius-sm); font-size: 0.75rem; word-break: break-all; }
+.error { color: #ff8888; min-height: 1.2em; }
+.controls { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
+button { background: var(--bg-4); border: 1px solid var(--border); color: var(--text); font-family: var(--font-mono); padding: 0.4rem 0.8rem; border-radius: var(--radius-sm); cursor: pointer; }
+button:hover { border-color: var(--accent); color: var(--accent); }`,
+        },
+        content: `import { Auth, loginRequest, logoutRequest, retryRequest } from './auth.js'
+import { map } from 'rxjs'
+
+export { loginRequest, logoutRequest, retryRequest }
+
+const auth = Auth.close().start('loggedOut')
+
+export { auth };
+
+export const authState$ = auth.state$.pipe(map(s => s.node))
+export const authToken$ = auth.state$.pipe(map(s => s.node === 'authenticated' ? s.data.token : ''))
+export const authError$ = auth.state$.pipe(map(s => s.node === 'loginFailed' ? s.data.reason : ''))
+export const init = () => {
+  return { auth }
+}`,
+      },
+      {
+        name: 'basket.form',
+        status: 'unanalyzed',
+        sections: {
+          template: `<div class="checkout-panel">
+  <div class="section auth-section">
+    <h4>Auth</h4>
+    <p>State: <span class="badge">{{authState}}</span></p>
+    <div class="controls">
+      <button onclick="loginRequest.next()">Login</button>
+      <button onclick="logoutRequest.next()">Logout</button>
+    </div>
+  </div>
+
+  <div class="section basket-section">
+    <h4>Basket</h4>
+    <p>State: <span class="badge">{{basketState}}</span> | Items: {{itemCount}}</p>
+    <p class="items">Items: {{basketItemsDisplay}}</p>
+    <p class="error">Error: {{basketError}}</p>
+    <div class="controls">
+      <button onclick="addItemRequest.next()">Add Item</button>
+      <button onclick="checkoutRequest.next()">Checkout</button>
+    </div>
+  </div>
+
+  <div class="section payment-section">
+    <h4>Payment</h4>
+    <p>State: <span class="badge">{{paymentState}}</span></p>
+    <p>TX: <code>{{paymentTxId}}</code></p>
+    <p class="error">Reason: {{paymentReason}}</p>
+  </div>
+</div>`,
+          styles: `.checkout-panel { display: flex; flex-direction: column; gap: 1rem; padding: 1.5rem; font-family: var(--font-mono); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); max-width: 520px; }
+.section { border: 1px solid var(--border); padding: 1rem; border-radius: var(--radius-sm); }
+h4 { margin: 0 0 0.5rem; color: var(--accent); }
+p { margin: 0.3rem 0; font-size: 0.9rem; }
+.badge { background: var(--bg-4); padding: 0.15rem 0.5rem; border-radius: var(--radius-sm); font-size: 0.8rem; text-transform: uppercase; }
+.items { font-size: 0.8rem; color: var(--text-secondary); word-break: break-all; min-height: 1.2em; }
+.error { color: #ff8888; min-height: 1.2em; }
+.controls { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
+button { background: var(--bg-4); border: 1px solid var(--border); color: var(--text); font-family: var(--font-mono); padding: 0.35rem 0.7rem; border-radius: var(--radius-sm); cursor: pointer; font-size: 0.85rem; }
+button:hover { border-color: var(--accent); color: var(--accent); }
+code { background: var(--bg-4); padding: 0.15rem 0.3rem; border-radius: var(--radius-sm); font-size: 0.75rem; }`,
+        },
+        content: `import { Auth, loginRequest, logoutRequest, retryRequest } from './auth.js'
+import { Payment } from './payment.js'
+import { Basket, addItemRequest, checkoutRequest } from './basket.js'
+import { map } from 'rxjs'
+
+export { addItemRequest, checkoutRequest, loginRequest, logoutRequest, retryRequest }
+
+export const authState$ = Auth.state$.pipe(map(s => s.node))
+export const basketState$ = Basket.state$.pipe(map(s => s.node))
+export const basketItems$ = Basket.state$.pipe(map(s => s.items || []))
+export const basketItemsDisplay$ = basketItems$.pipe(map(items => items.join(', ') || 'none'))
+export const basketError$ = Basket.state$.pipe(map(s => s.error || ''))
+export const paymentState$ = Payment.state$.pipe(map(s => s.node))
+export const paymentTxId$ = Payment.state$.pipe(map(s => s.txId || ''))
+export const paymentReason$ = Payment.state$.pipe(map(s => s.reason || ''))
+export const itemCount$ = basketItems$.pipe(map(items => items.length))
+
+export const init = () => {
+  const auth = Auth.close().start('loggedOut')
+  const payment = Payment.close().start('processing')
+  const basket = Basket.close().start('empty', { auth, payment })
+  return { auth, payment, basket }
+}`,
+      },
+      {
+        name: 'payment.form',
+        status: 'unanalyzed',
+        sections: {
+          template: `<div class="payment-panel">
+  <h3>Payment Gateway</h3>
+  <p>State: <span class="badge">{{paymentState}}</span></p>
+  <p>Order: {{paymentOrderId}}</p>
+  <p>TX: <code>{{paymentTxId}}</code></p>
+  <p class="error">Reason: {{paymentReason}}</p>
+  <div class="controls">
+    <button onclick="resetRequest.next()">Run Again</button>
+  </div>
+</div>`,
+          styles: `.payment-panel { display: flex; flex-direction: column; gap: 0.75rem; padding: 1.5rem; font-family: var(--font-mono); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); max-width: 420px; }
+h3 { margin: 0 0 0.5rem; color: var(--accent); }
+p { margin: 0.3rem 0; font-size: 0.9rem; }
+.badge { background: var(--bg-4); padding: 0.2rem 0.6rem; border-radius: var(--radius-sm); font-size: 0.85rem; text-transform: uppercase; }
+.error { color: #ff8888; min-height: 1.2em; }
+.controls { margin-top: 0.5rem; }
+button { background: var(--bg-4); border: 1px solid var(--border); color: var(--text); font-family: var(--font-mono); padding: 0.4rem 0.8rem; border-radius: var(--radius-sm); cursor: pointer; }
+button:hover { border-color: var(--accent); color: var(--accent); }
+code { background: var(--bg-4); padding: 0.2rem 0.4rem; border-radius: var(--radius-sm); font-size: 0.75rem; word-break: break-all; }`,
+        },
+        content: `import { Payment, resetRequest } from './payment.js'
+import { map } from 'rxjs'
+
+export { resetRequest }
+
+export const paymentState$ = Payment.state$.pipe(map(s => s.node))
+export const paymentTxId$ = Payment.state$.pipe(map(s => s.txId || ''))
+export const paymentReason$ = Payment.state$.pipe(map(s => s.reason || ''))
+export const paymentOrderId$ = Payment.state$.pipe(map(s => s.orderId || ''))
+
+export const init = () => {
+  const payment = Payment.close().start('processing')
+  return { payment }
+}`,
+      },
+    ],
+  }
 ]

@@ -39,19 +39,20 @@ function measureText(svg: SVGSVGElement, text: string, fontSize: number, italic 
         }
         /* The current node stays highlighted (.active). When traversed it
            loses .active and .firing fades it back to its own base over 2s.
-           Edges flash + fade the same way. Colour only - stroke width and
-           the arrow marker are never touched. */
-        .node { transition: stroke 0.2s ease, fill 0.2s ease; }
-        .node.active { stroke: #8af; fill: #1c2740; }
-        .node.firing { animation: nodeFire 1.5s ease-out; }
-        .edge.firing { animation: edgeFire 1.5s ease-out; }
+           Edges flash + fade the same way. Node stroke width is animated directly,
+           while edges use a drop-shadow glow so stroke width and the arrow marker
+           are never touched. */
+        .node { transition: stroke 0.2s ease, fill 0.2s ease, stroke-width 0.2s ease; }
+        .node.active { stroke: #8af; fill: #1c2740; stroke-width: 3px; }
+        .node.firing { animation: nodeFire 2s ease-out; }
+        .edge.firing { animation: edgeFire 2s ease-out; }
         @keyframes nodeFire {
-            from { stroke: #8af; fill: #1c2740; }
-            to { stroke: var(--base-stroke, #444); fill: #1a1a1a; }
+            from { stroke: #8af; fill: #1c2740; stroke-width: 3px; }
+            to { stroke: var(--base-stroke, #444); fill: #1a1a1a; stroke-width: 1px; }
         }
         @keyframes edgeFire {
-            from { stroke: #8af; }
-            to { stroke: var(--base-stroke, #9a9a9a); }
+            from { stroke: #8af; filter: drop-shadow(0 0 3px #8af) drop-shadow(0 0 5px #8af); }
+            to { stroke: var(--base-stroke, #9a9a9a); filter: drop-shadow(0 0 0 transparent); }
         }
         div {
             width: 100%;
@@ -412,8 +413,8 @@ export class GraphCanvas extends RxElement {
         const result = closureResults[group.graphKey]
         const borderColor = !result ? '#333'
             : result.success === false ? '#a44'
-            : result.warnings.length > 0 ? '#da0'
-            : '#4a4'
+                : result.warnings.length > 0 ? '#da0'
+                    : '#4a4'
 
         const kind = graphKinds[group.graphKey]
 

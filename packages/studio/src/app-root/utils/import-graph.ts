@@ -97,6 +97,28 @@ export function parseImports(name: string, content: string, available: ReadonlyS
 }
 
 /**
+ * The subset of `pool` reachable from `roots` by following import edges - the
+ * transitive closure. Used to scope a Play run to one workspace: its own files
+ * plus whatever they actually import (which may cross into another workspace),
+ * and nothing else. A workspace no root imports is left out entirely, so a bug
+ * in an unrelated workspace can't break the run.
+ */
+export function reachableFiles<T extends { name: string; content: string }>(pool: readonly T[], roots: Iterable<string>): T[] {
+    const byName = new Map(pool.map(f => [f.name, f]))
+    const available = new Set(byName.keys())
+    const seen = new Set<string>()
+    const stack = [...roots]
+    while (stack.length > 0) {
+        const name = stack.pop()!
+        const file = byName.get(name)
+        if (!file || seen.has(name)) continue
+        seen.add(name)
+        for (const dep of parseImports(name, file.content, available)) stack.push(dep)
+    }
+    return pool.filter(f => seen.has(f.name))
+}
+
+/**
  * Topological execution order for a pool of files: depth-first over import
  * edges, so a file is always ordered after everything it imports. Used both
  * to decide sandbox execution order and, from the edges `parseImports`

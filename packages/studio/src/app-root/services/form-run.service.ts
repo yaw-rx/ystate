@@ -5,6 +5,7 @@ import { RuntimeFilesystemService } from './runtime-filesystem.service.js'
 import { LiveModulesService } from './live-modules.service.js'
 import type { RuntimeFile, DependencyGraph } from '../types/runtime-filesystem.types.js'
 import { flattenFiles$, type FlatFile } from '../utils/flatten-files.js'
+import { reachableFiles } from '../utils/import-graph.js'
 import { fileKindOf } from '../utils/file-kind.js'
 import { formTag } from '../utils/form-tag.js'
 import { createFormComponent } from '../utils/create-form-component.js'
@@ -46,17 +47,23 @@ export class FormRunService {
     ) {}
 
     async prepare(workspaceName: string): Promise<PreparedForm[]> {
-        const [pool, graph, workspaces] = await Promise.all([
+        const [fullPool, graph, workspaces] = await Promise.all([
             firstValueFrom(flattenFiles$(this.filesystem.workspaces$)),
             firstValueFrom(this.filesystem.dependencyGraph$),
             firstValueFrom(this.filesystem.workspaces$),
         ])
 
-        const registry = this.liveModules.run(pool)
-
         const ws = workspaces.get(workspaceName)
         if (!ws) return []
         const files = await firstValueFrom(ws.files$)
+
+        // Isolate the run to this workspace: only its files and their
+        // transitive imports execute. A sibling workspace that this one
+        // doesn't import stays out of the pool, so its bugs can't break Play.
+        const roots = [...files.values()].map(f => f.qualifiedName)
+        const pool = reachableFiles(fullPool, roots)
+        const registry = this.liveModules.run(pool)
+
         const forms = [...files.values()].filter(f => fileKindOf(f.name) === 'form')
 
         return forms.map(form => this.prepareOne(form, pool, graph, registry))

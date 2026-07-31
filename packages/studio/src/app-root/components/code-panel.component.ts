@@ -47,7 +47,7 @@ const BINDING_LABEL: Record<FormAttachment['kind'], string> = {
                     <div class="tab-slot">
                         <button class="tab" [class.active]="isActiveTab(file.name)" [style.display]="tabButtonDisplay(file.name)" onclick="selectTab(file.name)" ondblclick="startRename($event, file.name)">{{file.name}}</button>
                         <span class="tab-edit" [style.display]="tabInputDisplay(file.name)">
-                            <input class="tab-input" [value]="baseOf(file.name)" oninput="autosize($event)" onkeydown="onRenameKey($event, file.name)" onblur="cancelEdit" />
+                            <input class="tab-input" oninput="autosize($event)" onkeydown="onRenameKey($event, file.name)" onblur="cancelEdit" />
                             <span class="tab-ext">{{extOf(file.name)}}</span>
                         </span>
                     </div>
@@ -160,12 +160,17 @@ export class CodePanel extends RxElement {
     // --- Tab add / rename ---
 
     /** The immutable extension (`.ts` or `.form`) - a rename edits only the base, never the kind. */
-    extOf(name: string): string {
+    private extensionOf(name: string): string {
         return name.endsWith('.form') ? '.form' : '.ts'
     }
 
+    /** Template-facing: the extension shown as the blue suffix beside the edit box. */
+    extOf(name: string): Observable<string> {
+        return of(this.extensionOf(name))
+    }
+
     baseOf(name: string): string {
-        return name.slice(0, -this.extOf(name).length)
+        return name.slice(0, -this.extensionOf(name).length)
     }
 
     get draftExt$(): Observable<string> {
@@ -213,9 +218,15 @@ export class CodePanel extends RxElement {
     startRename(e: Event, name: string): void {
         this.editing = name
         // The rename input is this tab's own sibling - reach it from the
-        // clicked tab, not a host-wide query.
+        // clicked tab, not a host-wide query. Prefill the current base name
+        // explicitly (a string can't be bound as [value] - bindings want
+        // observables), so a rename opens with the old name selected.
         const slot = (e.currentTarget as HTMLElement).parentElement
-        requestAnimationFrame(() => this.focusInput(slot?.querySelector('input')))
+        requestAnimationFrame(() => {
+            const input = slot?.querySelector('input')
+            if (input) input.value = this.baseOf(name)
+            this.focusInput(input)
+        })
     }
 
     private focusInput(input: HTMLInputElement | null | undefined): void {
@@ -236,7 +247,7 @@ export class CodePanel extends RxElement {
         const base = (e.target as HTMLInputElement).value.trim()
         this.editing = ''
         if (!base) return
-        const newName = base + this.extOf(oldName)
+        const newName = base + this.extensionOf(oldName)
         if (newName === oldName) return
         this.filesystem.renameFile(this.workspaceName, oldName, newName)
         if (this.activeTab === oldName) this.activeTab = newName
