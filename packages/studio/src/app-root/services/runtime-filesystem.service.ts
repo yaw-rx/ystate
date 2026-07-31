@@ -192,6 +192,53 @@ export class RuntimeFilesystemService implements RuntimeFilesystem {
     }
 
     /**
+     * Renames a workspace. Since a file's qualified name is `workspace/file`,
+     * this renames every file in it, and rewrites cross-workspace imports in
+     * other workspaces (`../old/x.js` -> `../new/x.js`) so nothing breaks.
+     * The whole workspace is torn down and re-hydrated under the new name
+     * (models are keyed by URI), preserving each file's content/sections.
+     */
+    renameWorkspace(oldName: string, newName: string): void {
+        const files$ = this.fileSubjects.get(oldName)
+        if (!files$ || oldName === newName || this.workspaceMap.has(newName)) return
+
+        const captured = [...files$.value.values()].map(f => ({
+            name: f.name,
+            content: f.model.getValue(),
+            sections: f.sections
+                ? { template: f.sections.template.model.getValue(), styles: f.sections.styles.model.getValue() }
+                : undefined,
+        }))
+        const renames = captured.map(f => ({
+            from: toQualifiedName(oldName, f.name),
+            to: toQualifiedName(newName, f.name),
+        }))
+        const manifest = this.manifests.get(oldName)
+
+        // Tear the old workspace down (dispose models/machines/persistence).
+        for (const f of files$.value.values()) this.teardownFile(f)
+        files$.complete()
+        this.fileSubjects.delete(oldName)
+        this.manifests.delete(oldName)
+        this.workspacePersistence.get(oldName)?.dispose()
+        this.workspacePersistence.delete(oldName)
+        this.workspaceMap.delete(oldName)
+
+        // Re-hydrate under the new name with the same files.
+        const kicks = this.hydrateWorkspace({
+            name: newName,
+            manifest: { ...(manifest ?? { concepts: [], metadata: {} }), name: newName },
+            files: captured.map(f => ({ name: f.name, status: 'unanalyzed', content: f.content, sections: f.sections })),
+        })
+
+        // Point every cross-workspace import at the moved files.
+        for (const r of renames) this.rewriteImportsAcross(r.from, r.to)
+        for (const kick of kicks) kick()
+
+        void this.storage.deleteWorkspace(oldName)
+    }
+
+    /**
      * Adds a new empty file to a workspace (kind inferred from the name -
      * `.ts` or `.form`) and kicks its first analysis. A form gets its
      * template/styles sections seeded; a ts file gets a placeholder export.

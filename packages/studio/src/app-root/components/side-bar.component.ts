@@ -43,7 +43,8 @@ function workspaceStatusIconKind$(files: RuntimeFile[]): Observable<StatusIconKi
                 <span class="section-label">Workspace</span>
                 <span class="current-name-row">
                     <status-icon [kind]="currentStatusIconKind"></status-icon>
-                    <span class="current-name">{{currentName}}</span>
+                    <span class="current-name" [style.display]="wsNameDisplay(currentWorkspaceName)" ondblclick="startRenameWorkspace($event, currentWorkspaceName)" title="Double-click to rename">{{currentName}}</span>
+                    <input class="ws-rename" [style.display]="wsEditDisplay(currentWorkspaceName)" [value]="currentName" onkeydown="onRenameWorkspaceKey($event, currentWorkspaceName)" onblur="cancelRenameWorkspace" />
                 </span>
             </div>
             <ul rx-for="file of currentFiles by name">
@@ -60,11 +61,16 @@ function workspaceStatusIconKind$(files: RuntimeFile[]): Observable<StatusIconKi
             </div>
             <input #wsInput class="ws-input" [style.display]="wsInputDisplay" onkeydown="onNewWorkspaceKey($event)" onblur="cancelNewWorkspace" placeholder="workspace name" />
             <div rx-for="ws of libraryWorkspaces by name" class="ws-entry">
-                <div class="ws-header" onclick="toggleExpanded(ws.name)">
-                    <span class="ws-chevron" [class.open]="isExpanded(ws.name)">&#9656;</span>
+                <div class="ws-header">
+                    <span class="ws-chevron" [class.open]="isExpanded(ws.name)" onclick="toggleExpanded(ws.name)">&#9656;</span>
                     <status-icon [kind]="ws.statusIconKind"></status-icon>
-                    <span>{{ws.name}}</span>
-                    <button class="open-btn" onclick="openWorkspace(ws.name)">Open</button>
+                    <span class="ws-name" [style.display]="wsNameDisplay(ws.name)" onclick="toggleExpanded(ws.name)" ondblclick="startRenameWorkspace($event, ws.name)">{{ws.name}}</span>
+                    <input class="ws-rename" [style.display]="wsEditDisplay(ws.name)" [value]="ws.name" onkeydown="onRenameWorkspaceKey($event, ws.name)" onblur="cancelRenameWorkspace" />
+                    <span class="ws-actions">
+                        <button class="open-btn" onclick="openWorkspace(ws.name)">Open</button>
+                        <button class="icon-btn" onclick="startRenameWorkspace($event, ws.name)" title="Rename">&#9998;</button>
+                        <button class="icon-btn danger" onclick="removeWorkspaceClick(ws.name)" title="Remove">&#10005;</button>
+                    </span>
                 </div>
                 <div rx-if="isExpanded(ws.name)">
                     <ul rx-for="file of ws.files by name">
@@ -211,8 +217,35 @@ function workspaceStatusIconKind$(files: RuntimeFile[]): Observable<StatusIconKi
         .ws-chevron.open {
             transform: rotate(90deg);
         }
-        .open-btn {
+        .ws-name {
+            flex: 1;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        /* Inline rename box - the base+ext editors live in the code panel;
+           workspace names have no extension, so this is a plain box. */
+        .ws-rename {
+            flex: 1;
+            min-width: 0;
+            background: var(--bg-3);
+            border: 1px solid var(--accent);
+            border-radius: var(--radius-sm);
+            color: var(--text);
+            font-family: var(--font-mono);
+            font-size: 0.8rem;
+            padding: 0.15rem 0.35rem;
+            outline: none;
+        }
+        .current-name-row .ws-rename { font-size: 0.85rem; }
+        .ws-actions {
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
             margin-left: auto;
+        }
+        .open-btn {
             background: none;
             border: var(--border-width) solid var(--border);
             border-radius: var(--radius-sm);
@@ -222,10 +255,27 @@ function workspaceStatusIconKind$(files: RuntimeFile[]): Observable<StatusIconKi
             padding: 0.15rem 0.4rem;
             letter-spacing: var(--tracking);
             text-transform: uppercase;
+            cursor: pointer;
         }
         .open-btn:hover {
             color: var(--accent);
             border-color: var(--accent);
+        }
+        .icon-btn {
+            background: none;
+            border: none;
+            color: var(--dim);
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            line-height: 1;
+            padding: 0.15rem;
+            cursor: pointer;
+        }
+        .icon-btn:hover {
+            color: var(--accent);
+        }
+        .icon-btn.danger:hover {
+            color: var(--error);
         }
         .lib-file {
             padding-left: 2rem;
@@ -238,6 +288,7 @@ export class SideBar extends RxElement {
     @state expandedName = ''
     @state currentWorkspaceName = ''
     @state creatingWorkspace = false
+    @state editingWorkspace = ''
     wsInput!: HTMLInputElement
     get hasCurrent$(): Observable<boolean> {
         return this.currentWorkspaceName$.pipe(map(n => n !== ''));
@@ -316,5 +367,47 @@ export class SideBar extends RxElement {
         if (!name) return;
         this.filesystem.createWorkspace(name);
         this.openWorkspace(name);
+    }
+
+    // --- Renaming a workspace (double-click the name, or the ✎ button) ------
+
+    wsNameDisplay(name: string): Observable<string> {
+        return this.editingWorkspace$.pipe(map(e => e === name ? 'none' : ''));
+    }
+
+    wsEditDisplay(name: string): Observable<string> {
+        return this.editingWorkspace$.pipe(map(e => e === name ? '' : 'none'));
+    }
+
+    startRenameWorkspace(e: Event, name: string): void {
+        this.editingWorkspace = name;
+        // The rename input is this row's own sibling - reach it from the
+        // clicked element, not a host-wide query.
+        const container = (e.currentTarget as HTMLElement).closest('.ws-header, .current-name-row');
+        requestAnimationFrame(() => {
+            const input = container?.querySelector('.ws-rename') as HTMLInputElement | null;
+            input?.focus();
+            input?.select();
+        });
+    }
+
+    cancelRenameWorkspace(): void {
+        this.editingWorkspace = '';
+    }
+
+    onRenameWorkspaceKey(e: KeyboardEvent, oldName: string): void {
+        if (e.key === 'Escape') { this.cancelRenameWorkspace(); return; }
+        if (e.key !== 'Enter') return;
+        const newName = (e.target as HTMLInputElement).value.trim();
+        this.editingWorkspace = '';
+        if (!newName || newName === oldName) return;
+        // Renames every file's qualified name and rewrites cross-workspace
+        // imports so nothing breaks across the library.
+        this.filesystem.renameWorkspace(oldName, newName);
+        if (this.currentWorkspaceName === oldName) this.openWorkspace(newName);
+    }
+
+    removeWorkspaceClick(name: string): void {
+        void this.filesystem.removeWorkspace(name);
     }
 }

@@ -118,10 +118,16 @@ export class FormPanel extends RxElement {
         target.setPointerCapture(e.pointerId)
         const startY = e.clientY
         const startH = this.heights[index]
+        const MIN = 60
 
         const onMove = (ev: PointerEvent) => {
+            // Never let this section push the pair past the host: leave room
+            // for the other fixed section plus a minimum for the fill section,
+            // so the triad can't grow over the terminal header below it.
+            const other = this.heights[index === 0 ? 1 : 0]
+            const max = Math.max(MIN, this.clientHeight - other - MIN)
             const next: [number, number] = [...this.heights]
-            next[index] = Math.max(60, startH + (ev.clientY - startY))
+            next[index] = Math.min(max, Math.max(MIN, startH + (ev.clientY - startY)))
             this.heights = next
         }
         const onUp = () => {
