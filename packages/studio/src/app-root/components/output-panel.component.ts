@@ -276,9 +276,14 @@ export class OutputPanel extends RxElement {
         }
         const startY = e.clientY
         const startH = wasCollapsed ? 28 : this.height
+        // Never let the panel grow so tall it eats its own header: cap the
+        // details height to the space available in the parent column, minus
+        // a reserve for this panel's header and a sliver of the editor above.
+        const parentHeight = this.parentElement?.clientHeight ?? window.innerHeight
+        const maxHeight = Math.max(60, parentHeight - 120)
 
         const onMove = (ev: PointerEvent) => {
-            this.height = Math.max(28, startH + (startY - ev.clientY))
+            this.height = Math.min(maxHeight, Math.max(28, startH + (startY - ev.clientY)))
         }
         const onUp = () => {
             target.removeEventListener('pointermove', onMove)

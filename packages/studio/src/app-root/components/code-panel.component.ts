@@ -41,8 +41,29 @@ const BINDING_LABEL: Record<FormAttachment['kind'], string> = {
     selector: 'code-panel',
     directives: [RxFor],
     template: `
-        <div class="tabs" rx-for="file of files by name">
-            <button class="tab" [class.active]="isActiveTab(file.name)" onclick="selectTab(file.name)">{{file.name}}</button>
+        <div class="tabs">
+            <div class="tab-scroll">
+                <div class="tab-list" rx-for="file of files by name">
+                    <div class="tab-slot">
+                        <button class="tab" [class.active]="isActiveTab(file.name)" [style.display]="tabButtonDisplay(file.name)" onclick="selectTab(file.name)" ondblclick="startRename($event, file.name)">{{file.name}}</button>
+                        <span class="tab-edit" [style.display]="tabInputDisplay(file.name)">
+                            <input class="tab-input" [value]="baseOf(file.name)" oninput="autosize($event)" onkeydown="onRenameKey($event, file.name)" onblur="cancelEdit" />
+                            <span class="tab-ext">{{extOf(file.name)}}</span>
+                        </span>
+                    </div>
+                </div>
+                <span class="tab-edit" [style.display]="draftDisplay">
+                    <input #draftInput class="tab-input" oninput="autosize($event)" onkeydown="onNewKey($event)" onblur="cancelEdit" placeholder="name" />
+                    <span class="tab-ext">{{draftExt}}</span>
+                </span>
+            </div>
+            <div class="add-tab">
+                <button class="tab-add" onclick="toggleMenu" title="New file">+</button>
+                <div class="add-menu" [style.display]="menuDisplay">
+                    <button class="add-menu-item" onclick="newFile('ts-file')">ts file</button>
+                    <button class="add-menu-item" onclick="newFile('form')">form</button>
+                </div>
+            </div>
         </div>
         <div class="body">
             <file-editor [style.display]="tsDisplay" [file]="activeFile"></file-editor>
@@ -52,10 +73,27 @@ const BINDING_LABEL: Record<FormAttachment['kind'], string> = {
     `,
     styles: `
         :host { display: flex; flex-direction: column; height: 100%; background: var(--bg-2); }
-        .tabs { display: flex; border-bottom: var(--border-width) solid var(--border); background: var(--bg-1); overflow-x: auto; flex-shrink: 0; }
+        .tabs { display: flex; border-bottom: var(--border-width) solid var(--border); background: var(--bg-1); flex-shrink: 0; }
+        /* Tabs scroll horizontally with no visible scrollbar; the + stays pinned. */
+        .tab-scroll { display: flex; overflow-x: auto; scrollbar-width: none; min-width: 0; }
+        .tab-scroll::-webkit-scrollbar { display: none; }
+        .tab-list { display: flex; }
+        .tab-slot { display: flex; }
         .tab { background: none; border: none; border-right: var(--border-width) solid var(--border); color: var(--dim); font-family: var(--font-mono); font-size: 0.75rem; padding: 0.5rem 1rem; cursor: pointer; white-space: nowrap; transition: color 0.1s, background 0.1s; }
         .tab:hover { color: var(--text); background: var(--bg-4); }
         .tab.active { color: var(--accent); background: var(--bg-3); border-bottom: 2px solid var(--accent); }
+        /* Editable base + immutable extension shown as a blue suffix. The
+           input auto-grows to its content (see autosize), so nothing is
+           hidden and there's a sensible minimum width. */
+        .tab-edit { display: inline-flex; align-items: center; background: var(--bg-3); border: 1px solid var(--accent); padding: 0 0.5rem; }
+        .tab-input { background: none; border: none; color: var(--text); font-family: var(--font-mono); font-size: 0.75rem; padding: 0.4rem 0; min-width: 4ch; outline: none; }
+        .tab-ext { color: var(--accent); font-family: var(--font-mono); font-size: 0.75rem; white-space: nowrap; }
+        .add-tab { position: relative; flex-shrink: 0; border-left: var(--border-width) solid var(--border); }
+        .tab-add { background: none; border: none; color: var(--dim); font-size: 1rem; line-height: 1; padding: 0.4rem 0.7rem; cursor: pointer; }
+        .tab-add:hover { color: var(--accent); background: var(--bg-4); }
+        .add-menu { position: absolute; top: 100%; right: 0; z-index: 10; background: var(--bg-1); border: var(--border-width) solid var(--border); border-radius: var(--radius-sm); display: flex; flex-direction: column; min-width: 6rem; }
+        .add-menu-item { background: none; border: none; color: var(--text); font-family: var(--font-mono); font-size: 0.72rem; text-align: left; padding: 0.4rem 0.7rem; cursor: pointer; }
+        .add-menu-item:hover { background: var(--bg-4); color: var(--accent); }
         .body { flex: 1; min-height: 0; min-width: 0; display: flex; }
         .body > * { flex: 1; min-height: 0; min-width: 0; }
     `,
@@ -69,6 +107,12 @@ export class CodePanel extends RxElement {
     @state activeFile: RuntimeFile | null = null
     @state terminalResult: SandboxResult | null = null
     @state formReports: FormReport[] = []
+    // Inline tab editing: '' none, a file name when renaming it, '__new__'
+    // when naming a new file (its kind held in draftKind).
+    @state editing = ''
+    @state draftKind = ''
+    @state menuOpen = false
+    draftInput!: HTMLInputElement
     private subs: Subscription[] = []
 
     override onInit(): void {
@@ -110,6 +154,102 @@ export class CodePanel extends RxElement {
     }
 
     selectTab(name: string): void {
+        this.activeTab = name
+    }
+
+    // --- Tab add / rename ---
+
+    /** The immutable extension (`.ts` or `.form`) - a rename edits only the base, never the kind. */
+    extOf(name: string): string {
+        return name.endsWith('.form') ? '.form' : '.ts'
+    }
+
+    baseOf(name: string): string {
+        return name.slice(0, -this.extOf(name).length)
+    }
+
+    get draftExt$(): Observable<string> {
+        return this.draftKind$.pipe(map(k => k === 'form' ? '.form' : '.ts'))
+    }
+
+    /** Grow the input to fit its text (with a small minimum) so nothing is clipped. */
+    autosize(e: Event): void {
+        const input = e.target as HTMLInputElement
+        input.style.width = `${Math.max(4, input.value.length + 1)}ch`
+    }
+
+    tabButtonDisplay(name: string): Observable<string> {
+        return this.editing$.pipe(map(e => e === name ? 'none' : ''))
+    }
+
+    tabInputDisplay(name: string): Observable<string> {
+        return this.editing$.pipe(map(e => e === name ? '' : 'none'))
+    }
+
+    get draftDisplay$(): Observable<string> {
+        return this.editing$.pipe(map(e => e === '__new__' ? '' : 'none'))
+    }
+
+    get menuDisplay$(): Observable<string> {
+        return this.menuOpen$.pipe(map(o => o ? '' : 'none'))
+    }
+
+    toggleMenu(): void {
+        this.menuOpen = !this.menuOpen
+    }
+
+    newFile(kind: string): void {
+        this.draftKind = kind
+        this.editing = '__new__'
+        this.menuOpen = false
+        // The draft input is a single reused element - clear whatever was
+        // typed last so a new file never starts with a stale name.
+        requestAnimationFrame(() => {
+            this.draftInput.value = ''
+            this.focusInput(this.draftInput)
+        })
+    }
+
+    startRename(e: Event, name: string): void {
+        this.editing = name
+        // The rename input is this tab's own sibling - reach it from the
+        // clicked tab, not a host-wide query.
+        const slot = (e.currentTarget as HTMLElement).parentElement
+        requestAnimationFrame(() => this.focusInput(slot?.querySelector('input')))
+    }
+
+    private focusInput(input: HTMLInputElement | null | undefined): void {
+        if (!input) return
+        input.focus()
+        input.select()
+        input.style.width = `${Math.max(4, input.value.length + 1)}ch`
+    }
+
+    cancelEdit(): void {
+        this.editing = ''
+        this.menuOpen = false
+    }
+
+    onRenameKey(e: KeyboardEvent, oldName: string): void {
+        if (e.key === 'Escape') { this.cancelEdit(); return }
+        if (e.key !== 'Enter') return
+        const base = (e.target as HTMLInputElement).value.trim()
+        this.editing = ''
+        if (!base) return
+        const newName = base + this.extOf(oldName)
+        if (newName === oldName) return
+        this.filesystem.renameFile(this.workspaceName, oldName, newName)
+        if (this.activeTab === oldName) this.activeTab = newName
+    }
+
+    onNewKey(e: KeyboardEvent): void {
+        if (e.key === 'Escape') { this.cancelEdit(); return }
+        if (e.key !== 'Enter') return
+        const base = (e.target as HTMLInputElement).value.trim()
+        this.editing = ''
+        if (!base) return
+        const name = base + (this.draftKind === 'form' ? '.form' : '.ts')
+        this.filesystem.addFile(this.workspaceName, name)
         this.activeTab = name
     }
 

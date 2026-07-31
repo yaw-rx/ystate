@@ -40,7 +40,10 @@ export class FileEditor extends RxElement {
         this.ro.observe(this.container)
 
         this.subs.push(this.file$.pipe(
-            tap(file => { if (file && this.editor) this.editor.setModel(file.model) }),
+            // Clear to null when there's no file (e.g. mid-rename, when the
+            // old file is gone from the map before the new tab is active) so
+            // the editor never holds a just-disposed model.
+            tap(file => this.editor?.setModel(file?.model ?? null)),
         ).subscribe())
     }
 

@@ -31,6 +31,52 @@ export function resolveImportSpecifier(fromName: string, specifier: string, avai
 }
 
 /**
+ * The `.js` specifier a file at `fromName` would write to import the file at
+ * `toName` - the inverse of `resolveImportSpecifier`. Used to rewrite
+ * imports when a file is renamed (`../other/x.ts` -> `../other/y.js`), so
+ * dependents keep resolving to the moved file across both pools.
+ */
+export function relativeImportSpecifier(fromName: string, toName: string): string {
+    const fromDir = dirnameOf(fromName).split('/').filter(Boolean)
+    const toParts = toName.replace(/\.ts$/, '').split('/').filter(Boolean)
+    let i = 0
+    while (i < fromDir.length && i < toParts.length - 1 && fromDir[i] === toParts[i]) i++
+    const ups = fromDir.length - i
+    const rel = [...Array<string>(ups).fill('..'), ...toParts.slice(i)].join('/')
+    return `${rel.startsWith('.') ? '' : './'}${rel}.js`
+}
+
+/**
+ * Rewrites every import/export specifier in `content` that resolves to
+ * `oldTarget` so it points at `newTarget` instead - used when `oldTarget`
+ * was renamed. `available` must include `oldTarget` (so the pre-rename
+ * specifiers still resolve to it). Returns the content unchanged if nothing
+ * referenced the renamed file.
+ */
+export function rewriteImportsTo(
+    fromName: string,
+    content: string,
+    oldTarget: string,
+    newTarget: string,
+    available: ReadonlySet<string>,
+): string {
+    const sourceFile = ts.createSourceFile(fromName, content, ts.ScriptTarget.ES2022, true)
+    const edits: { start: number; end: number; text: string }[] = []
+
+    ts.forEachChild(sourceFile, node => {
+        const specifier = (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) ? node.moduleSpecifier : undefined
+        if (!specifier || !ts.isStringLiteral(specifier)) return
+        if (resolveImportSpecifier(fromName, specifier.text, available) !== oldTarget) return
+        // Replace the text inside the quotes only.
+        edits.push({ start: specifier.getStart(sourceFile) + 1, end: specifier.getEnd() - 1, text: relativeImportSpecifier(fromName, newTarget) })
+    })
+
+    let result = content
+    for (const e of edits.sort((a, b) => b.start - a.start)) result = result.slice(0, e.start) + e.text + result.slice(e.end)
+    return result
+}
+
+/**
  * The forward import edges parsed out of one file's content, restricted to
  * `available`. A specifier that isn't a relative path resolving into
  * `available` (a bare package name like `@yaw-rx/ystate` or `rxjs`, or a

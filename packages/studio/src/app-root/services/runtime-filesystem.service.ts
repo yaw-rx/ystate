@@ -1,7 +1,7 @@
 import { Injectable, state } from '@yaw-rx/core'
 import * as monaco from 'monaco-editor'
 import { BehaviorSubject, shareReplay, type Observable } from 'rxjs'
-import type { RuntimeFilesystem, RuntimeWorkspace, RuntimeFile, RuntimeFormSection, DependencyGraph } from '../types/runtime-filesystem.types.js'
+import type { RuntimeFilesystem, RuntimeWorkspace, RuntimeFile, RuntimeFormSection, DependencyGraph, QualifiedName } from '../types/runtime-filesystem.types.js'
 import type { SerializedWorkspace, SerializedWorkspaceFile, WorkspaceManifest, SerializedDependencyGraph } from '../types/serialized-filesystem.types.js'
 import { WorkspaceEvaluationService } from './workspace-evaluation.service.js'
 import { FilesystemStorage, FILESYSTEM_STORAGE } from './filesystem-storage.js'
@@ -11,6 +11,7 @@ import { modelContent$ } from '../utils/model-content.js'
 import { toModelUri, toSectionUri } from '../utils/model-uri.js'
 import { toQualifiedName } from '../utils/qualified-name.js'
 import { fileKindOf } from '../utils/file-kind.js'
+import { rewriteImportsTo } from '../utils/import-graph.js'
 import { deriveDependencyGraph$ } from '../utils/derive-dependency-graph.js'
 import { toSerializedWorkspace$, toSerializedDependencyGraph$ } from '../utils/serialize-runtime.js'
 import { logMachineFailures } from '../utils/log-machine-failures.js'
@@ -182,6 +183,77 @@ export class RuntimeFilesystemService implements RuntimeFilesystem {
         this.workspaceMap$.touch()
 
         await this.storage.deleteWorkspace(name)
+    }
+
+    /** A blank workspace, ready to add files to. The caller typically opens it immediately. */
+    createWorkspace(name: string): void {
+        if (this.workspaceMap.has(name)) return
+        this.addWorkspace({ name, manifest: { name, concepts: [], metadata: {} }, files: [] })
+    }
+
+    /**
+     * Adds a new empty file to a workspace (kind inferred from the name -
+     * `.ts` or `.form`) and kicks its first analysis. A form gets its
+     * template/styles sections seeded; a ts file gets a placeholder export.
+     */
+    addFile(workspaceName: string, name: string): void {
+        const files$ = this.fileSubjects.get(workspaceName)
+        if (!files$ || files$.value.has(name)) return
+
+        const isForm = fileKindOf(name) === 'form'
+        const serialized: SerializedWorkspaceFile = {
+            name,
+            status: 'unanalyzed',
+            content: isForm ? '' : 'export const value = 0\n',
+            sections: isForm ? { template: '<div class="panel"></div>', styles: '' } : undefined,
+        }
+        const runtimeFile = this.hydrateFile(workspaceName, serialized)
+        const next = new Map(files$.value)
+        next.set(name, runtimeFile)
+        files$.next(next)
+        runtimeFile.request$.next()
+    }
+
+    /**
+     * Renames a file, preserving its content, and rewrites every import in
+     * every other file that referenced it so nothing breaks across either
+     * pool (see rewriteImportsTo). The file is torn down and re-hydrated
+     * under the new name (a Monaco model is keyed by its URI, so a rename is
+     * a new model), then re-analysed.
+     */
+    renameFile(workspaceName: string, oldName: string, newName: string): void {
+        const files$ = this.fileSubjects.get(workspaceName)
+        if (!files$) return
+        const old = files$.value.get(oldName)
+        if (!old || oldName === newName || files$.value.has(newName)) return
+
+        const content = old.model.getValue()
+        const sections = old.sections
+            ? { template: old.sections.template.model.getValue(), styles: old.sections.styles.model.getValue() }
+            : undefined
+        this.teardownFile(old)
+
+        const runtimeFile = this.hydrateFile(workspaceName, { name: newName, status: 'unanalyzed', content, sections })
+        const next = new Map(files$.value)
+        next.delete(oldName)
+        next.set(newName, runtimeFile)
+        files$.next(next)
+
+        this.rewriteImportsAcross(toQualifiedName(workspaceName, oldName), toQualifiedName(workspaceName, newName))
+        runtimeFile.request$.next()
+    }
+
+    /** Rewrite imports pointing at `oldQN` to `newQN` in every file across every workspace. Editing a model re-triggers that file's analysis via content$. */
+    private rewriteImportsAcross(oldQN: QualifiedName, newQN: QualifiedName): void {
+        const allFiles = [...this.fileSubjects.values()].flatMap(f$ => [...f$.value.values()])
+        // oldQN is included so specifiers written before the rename still resolve to it.
+        const available = new Set<string>([...allFiles.map(f => f.qualifiedName), oldQN])
+        for (const f of allFiles) {
+            if (f.qualifiedName === newQN) continue
+            const content = f.model.getValue()
+            const rewritten = rewriteImportsTo(f.qualifiedName, content, oldQN, newQN, available)
+            if (rewritten !== content) f.model.setValue(rewritten)
+        }
     }
 
     private hydrateFile(workspaceName: string, serializedFile: SerializedWorkspaceFile): RuntimeFile {

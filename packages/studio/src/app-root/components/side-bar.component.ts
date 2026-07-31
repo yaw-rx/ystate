@@ -54,7 +54,11 @@ function workspaceStatusIconKind$(files: RuntimeFile[]): Observable<StatusIconKi
         </section>
 
         <section class="library">
-            <span class="section-label">Library</span>
+            <div class="library-header">
+                <span class="section-label">Library</span>
+                <button class="new-ws-btn" onclick="startNewWorkspace" title="New workspace">+</button>
+            </div>
+            <input #wsInput class="ws-input" [style.display]="wsInputDisplay" onkeydown="onNewWorkspaceKey($event)" onblur="cancelNewWorkspace" placeholder="workspace name" />
             <div rx-for="ws of libraryWorkspaces by name" class="ws-entry">
                 <div class="ws-header" onclick="toggleExpanded(ws.name)">
                     <span class="ws-chevron" [class.open]="isExpanded(ws.name)">&#9656;</span>
@@ -112,6 +116,39 @@ function workspaceStatusIconKind$(files: RuntimeFile[]): Observable<StatusIconKi
         }
         .section-header .section-label {
             padding: 0;
+        }
+        .library-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding-right: 0.5rem;
+        }
+        .new-ws-btn {
+            background: none;
+            border: var(--border-width) solid var(--border);
+            border-radius: var(--radius-sm);
+            color: var(--dim);
+            font-family: var(--font-mono);
+            font-size: 0.9rem;
+            line-height: 1;
+            width: 1.4rem;
+            height: 1.4rem;
+            cursor: pointer;
+        }
+        .new-ws-btn:hover {
+            color: var(--accent);
+            border-color: var(--accent);
+        }
+        .ws-input {
+            margin: 0.25rem 1rem 0.5rem;
+            background: var(--bg-3);
+            border: 1px solid var(--accent);
+            border-radius: var(--radius-sm);
+            color: var(--text);
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            padding: 0.35rem 0.5rem;
+            outline: none;
         }
         .current-name-row {
             display: flex;
@@ -200,6 +237,8 @@ export class SideBar extends RxElement {
     @Inject(Router) private readonly router!: Router;
     @state expandedName = ''
     @state currentWorkspaceName = ''
+    @state creatingWorkspace = false
+    wsInput!: HTMLInputElement
     get hasCurrent$(): Observable<boolean> {
         return this.currentWorkspaceName$.pipe(map(n => n !== ''));
     }
@@ -254,5 +293,28 @@ export class SideBar extends RxElement {
         this.currentWorkspaceName = name;
         this.expandedName = '';
         this.router.navigate('/workspace/' + name);
+    }
+
+    startNewWorkspace(): void {
+        this.creatingWorkspace = true;
+        requestAnimationFrame(() => { this.wsInput.focus(); this.wsInput.select(); });
+    }
+
+    cancelNewWorkspace(): void {
+        this.creatingWorkspace = false;
+    }
+
+    get wsInputDisplay$(): Observable<string> {
+        return this.creatingWorkspace$.pipe(map(c => c ? '' : 'none'));
+    }
+
+    onNewWorkspaceKey(e: KeyboardEvent): void {
+        if (e.key === 'Escape') { this.cancelNewWorkspace(); return; }
+        if (e.key !== 'Enter') return;
+        const name = (e.target as HTMLInputElement).value.trim();
+        this.creatingWorkspace = false;
+        if (!name) return;
+        this.filesystem.createWorkspace(name);
+        this.openWorkspace(name);
     }
 }
