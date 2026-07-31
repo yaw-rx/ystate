@@ -156,6 +156,7 @@ machineSet: MachineSet<TNodes, TEdges, TTransitions>,
 
   function enter(namespacedNode: string, data: NodeData) {
     current = { node: namespacedNode, data }
+    nodes[namespacedNode] = data
 
     const outgoing = Object.entries(rootGraph.edges).filter(([_, e]) => e.from === namespacedNode)
     if (outgoing.length === 0) {

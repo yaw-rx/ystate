@@ -4,9 +4,15 @@ import * as monaco from 'monaco-editor'
  * The single URI convention for addressing a workspace file's Monaco model.
  * Anything that needs to look up an existing model (or create one) must go
  * through this so the two can never drift apart.
+ *
+ * The script model is always addressed as a `.ts` module so Monaco's TS
+ * services resolve it - a form's `panel.form` becomes `panel.form.ts`, which
+ * is exactly how a sibling form imports it (`./panel.form.js`). A plain `.ts`
+ * file already ends in `.ts` and is left untouched.
  */
 export function toModelUri(workspaceName: string, fileName: string): monaco.Uri {
-    return monaco.Uri.parse(`file:///${workspaceName}/${fileName}`)
+    const path = fileName.endsWith('.ts') ? fileName : `${fileName}.ts`
+    return monaco.Uri.parse(`file:///${workspaceName}/${path}`)
 }
 
 /**

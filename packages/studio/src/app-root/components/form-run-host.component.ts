@@ -130,6 +130,9 @@ export class FormRunHost extends RxElement {
         this.activeTag = ''
         this.emitRunning()
         this.refreshRunResult()
+        // Machines are now stopped; drop the executed-module cache so the next
+        // Play re-evaluates every form and starts fresh instances.
+        this.formRun.reset()
     }
 
     selectTab(tag: string): void {

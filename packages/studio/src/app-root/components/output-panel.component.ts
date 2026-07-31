@@ -1,7 +1,7 @@
 import { Component, RxElement, state } from '@yaw-rx/core'
 import { RxIf } from '@yaw-rx/core/directives/rx-if'
 import { RxFor } from '@yaw-rx/core/directives/rx-for'
-import { map, tap, type Observable, type Subscription } from 'rxjs'
+import { map, of, tap, type Observable, type Subscription } from 'rxjs'
 import type { SandboxResult, ClosureResult, ClosureIssue, MachineSetValidationIssue } from '../services/sandbox.service.js'
 
 /** One running machine a form's init() produced: its name (the init-map key) and live lifecycle status. */
@@ -53,7 +53,10 @@ interface DetailEntry {
         <div class="output-divider" onpointerdown="startResize"></div>
         <div class="status-bar" onclick="toggle">
             <span class="status">
-                <span rx-if="hasRunning" class="success">▶ {{runningText}}</span>
+                <span rx-if="hasRunningCount" class="success">▶ {{runningCountText}} </span>
+                <span rx-if="hasStoppedCount" class="warn">■ {{stoppedCountText}} </span>
+                <span rx-if="hasErrorCount" class="error">✗ {{errorCountText}} </span>
+                <span rx-if="hasDoneCount" class="complete">✓ {{doneCountText}} </span>
                 <span rx-if="hasForms" class="success">{{formSummary}}</span>
                 <span rx-if="hasUnviable" class="error"> · {{unviableText}}</span>
                 <span rx-if="hasFailures" class="error">✗ </span>
@@ -68,7 +71,7 @@ interface DetailEntry {
         </div>
         <div class="details" [style.display]="detailsDisplay" [style.height]="detailsHeight">
             <div rx-for="m of runningMachines by name">
-                <div class="entry running">▶ {{m.name}} — {{m.status}}</div>
+                <div class="entry" [style.color]="machineColor(m.status)">▶ {{m.name}} — {{m.status}}</div>
             </div>
             <div rx-for="form of formReports by name">
                 <div class="entry form-name" [style.color]="form.color">{{form.name}}</div>
@@ -130,6 +133,7 @@ interface DetailEntry {
         .status .error { color: var(--error); }
         .status .success { color: var(--success); }
         .status .warn { color: var(--warn); }
+        .status .complete { color: var(--accent); }
         .toggle {
             background: none;
             border: none;
@@ -208,12 +212,39 @@ export class OutputPanel extends RxElement {
     @state formReports: FormReport[] = []
     private subs: Subscription[] = []
 
-    get hasRunning$(): Observable<boolean> {
-        return this.runningMachines$.pipe(map(m => m.length > 0))
+    // Run-mode header, traffic-lit per lifecycle status (green running/done,
+    // yellow stopped, red error) - the same convention as graph closures.
+    private countStatus(...statuses: string[]): Observable<number> {
+        return this.runningMachines$.pipe(map(m => m.filter(x => statuses.includes(x.status)).length))
     }
 
-    get runningText$(): Observable<string> {
-        return this.runningMachines$.pipe(map(m => `${m.length} machine${m.length !== 1 ? 's' : ''} running`))
+    get runningCount$(): Observable<number> { return this.countStatus('running') }
+    get stoppedCount$(): Observable<number> { return this.countStatus('stopped') }
+    get errorCount$(): Observable<number> { return this.countStatus('error') }
+    get doneCount$(): Observable<number> { return this.countStatus('complete') }
+
+    get hasRunningCount$(): Observable<boolean> { return this.runningCount$.pipe(map(n => n > 0)) }
+    get hasStoppedCount$(): Observable<boolean> { return this.stoppedCount$.pipe(map(n => n > 0)) }
+    get hasErrorCount$(): Observable<boolean> { return this.errorCount$.pipe(map(n => n > 0)) }
+    get hasDoneCount$(): Observable<boolean> { return this.doneCount$.pipe(map(n => n > 0)) }
+
+    get runningCountText$(): Observable<string> { return this.runningCount$.pipe(map(n => `${n} running machine${n !== 1 ? 's' : ''}`)) }
+    get stoppedCountText$(): Observable<string> { return this.stoppedCount$.pipe(map(n => `${n} stopped machine${n !== 1 ? 's' : ''}`)) }
+    get errorCountText$(): Observable<string> { return this.errorCount$.pipe(map(n => `${n} errored machine${n !== 1 ? 's' : ''}`)) }
+    get doneCountText$(): Observable<string> { return this.doneCount$.pipe(map(n => `${n} completed machine${n !== 1 ? 's' : ''}`)) }
+
+    /** Traffic-light colour for one running machine's lifecycle status - matches the header. */
+    // STATUS ISNT SUBSCRIBABLE AND FUNCTIONS CAN ONLY BE INITED ONCE WITH STATIC PARAMS THIS IS STUPID
+    // WE SHOULD HAVE SECTIONS OF CONSTANT COLOR AND FILTER RUNNABLE MACHINES WITH RX IFS
+    machineColor(status: string): Observable<string> {
+        console.log('WHAT ', status);
+        const colorMap: Record<string, string> = {
+            'error': 'var(--error)',
+            'stopped': 'var(--warn)',
+            'complete': 'var(--accent)'
+        };
+
+        return of(colorMap[status] ?? 'var(--success)');
     }
 
     get hasForms$(): Observable<boolean> {
@@ -225,7 +256,7 @@ export class OutputPanel extends RxElement {
         return this.formReports$.pipe(map(r => {
             const viable = r.filter(f => f.viable).length
             const machines = r.reduce((n, f) => n + f.machines.length, 0)
-            return `${viable} viable form${viable !== 1 ? 's' : ''} · ${machines} running machine${machines !== 1 ? 's' : ''}`
+            return `${viable} viable form${viable !== 1 ? 's' : ''} · ${machines} runnable machine${machines !== 1 ? 's' : ''}`
         }))
     }
 

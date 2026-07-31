@@ -38,16 +38,25 @@ export interface FormErrorDetail {
  * we call it on each.
  *
  * The tag is content-addressed (see form-tag.ts), so a given tag maps to
- * exactly one class over exactly one set of live instances. Redefining is
- * therefore never correct nor allowed - if the tag already exists, its
- * class is reused as-is.
+ * exactly one class - but NOT to one fixed set of instances. A custom element
+ * can never be redefined, yet Stop tears the machines down and a re-Play must
+ * start fresh ones. So the class reads its exports *live* from `liveExports`
+ * rather than closure-capturing them: each run overwrites `liveExports[tag]`
+ * with the freshly re-evaluated module exports, and the same element class
+ * transparently binds the new instances on its next mount.
  */
+const liveExports = new Map<string, Record<string, unknown>>()
+
 export function createFormComponent(
     tag: string,
     template: string,
     styles: string,
     exports: Record<string, unknown>,
 ): CustomElementConstructor {
+    // Always point the tag at this run's exports, even when the class already
+    // exists - that's what lets a re-Play bind fresh (restarted) machines.
+    liveExports.set(tag, exports)
+
     const existing = customElements.get(tag)
     if (existing !== undefined) return existing
 
@@ -55,7 +64,7 @@ export function createFormComponent(
         private running: Record<string, RunningMachineSet> = {}
 
         override onInit(): void {
-            const init = exports['init']
+            const init = (liveExports.get(tag) ?? {})['init']
             if (typeof init !== 'function') return
             try {
                 this.running = (init as () => Record<string, RunningMachineSet>)() ?? {}
@@ -86,10 +95,12 @@ export function createFormComponent(
 
     // Expose every export as a getter the template's bindings resolve
     // against. Getters (not fields) so they always read the current live
-    // value and are never overwritten by the binding system.
+    // value - and read through `liveExports[tag]`, so a re-Play's fresh
+    // instances back the same bindings. The key set is stable per tag
+    // (content-addressed), so binding the first run's keys is enough.
     for (const key of Object.keys(exports)) {
         Object.defineProperty(FormElement.prototype, key, {
-            get() { return exports[key] },
+            get() { return liveExports.get(tag)?.[key] },
             enumerable: true,
             configurable: true,
         })

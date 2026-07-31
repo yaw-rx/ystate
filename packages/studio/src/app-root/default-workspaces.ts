@@ -243,7 +243,7 @@ export const Auth = define({
     next: () => ({ since: Date.now() }),
   },
   sessionExpire: {
-    $: () => timer(10000),
+    $: () => timer(120000),
     next: (_result, _dest, source) => ({ since: source.authenticatedAt }),
   },
   logoutSignal: {
@@ -256,7 +256,8 @@ export const Auth = define({
         name: 'payment.ts',
         status: 'unanalyzed',
         content: `import { define } from '@yaw-rx/ystate'
-import { Subject, timer, mergeMap, throwError, of, EMPTY } from 'rxjs'
+import { Subject, timer, mergeMap, throwError, of, EMPTY, withLatestFrom, map } from 'rxjs'
+import { Auth } from './auth.js'
 
 const simulatePayment = () => timer(3000).pipe(
   mergeMap(() => {
@@ -267,24 +268,53 @@ const simulatePayment = () => timer(3000).pipe(
   })
 )
 
+// The UI's "Pay" button. Moves checkout -> processing, but only when logged
+// in - gated below against the shared auth instance.
+export const payRequest = new Subject<void>()
 export const resetRequest = new Subject<void>()
 
 export const Payment = define({
   nodes: {
+    checkout: {},
+    notLoggedIn: {},
     processing: { orderId: '' },
+    // approved is terminal: once paid we're done. No reset off it - stop and
+    // start the machine for another run.
     approved: { confirmedAt: 0, txId: '' },
     declined: { reason: '' },
     stalled: { orderId: '' },
   },
+  deps: {
+    auth: Auth,
+  },
   edges: {
+    pay: { from: 'checkout', to: 'processing', on: 'pay.next' },
+    payBlocked: { from: 'checkout', to: 'notLoggedIn', on: 'pay.error' },
+    dismiss: { from: 'notLoggedIn', to: 'checkout', on: 'dismiss.next' },
     approve: { from: 'processing', to: 'approved', on: 'process.next' },
     decline: { from: 'processing', to: 'declined', on: 'process.error' },
     stall: { from: 'processing', to: 'stalled', on: 'process.complete' },
-    reset: { from: 'approved', to: 'processing', on: 'reset.next' },
     resetDeclined: { from: 'declined', to: 'processing', on: 'reset.next' },
     resetStalled: { from: 'stalled', to: 'processing', on: 'reset.next' },
   },
 }).implement({
+  // Gate: pay only proceeds when auth is 'authenticated'; otherwise it errors,
+  // routing checkout -> notLoggedIn, which bounces back to checkout shortly.
+  pay: {
+    $: (deps) => payRequest.pipe(
+      withLatestFrom(deps.auth.state$),
+      map(([_, auth]) => {
+        if (auth.node !== 'authenticated') throw new Error('not logged in')
+        return {}
+      })
+    ),
+    next: () => ({ orderId: \`ORD-\${Date.now()}\` }),
+    error: () => ({}),
+  },
+  dismiss: {
+    $: () => timer(1500),
+    next: () => ({}),
+  },
   process: {
     $: () => simulatePayment(),
     next: (result) => ({ confirmedAt: Date.now(), txId: result.txId }),
@@ -329,10 +359,17 @@ export const Basket = define({
     payment: Payment,
   },
   edges: (refs) => ({
+    // addItem's $ runs the stock check, so its error edge must leave every
+    // node that listens for addItem (empty/hasItems/addFailed) - that's where
+    // the $ is subscribed and can throw 'out of stock'. Routing the error off
+    // 'addingItem' (which listens for itemAdded, not addItem) left the error
+    // unhandled and crashed the machine.
     addFromEmpty: { from: 'empty', to: 'addingItem', on: 'addItem.next' },
     addFromHasItems: { from: 'hasItems', to: 'addingItem', on: 'addItem.next' },
-    addError: { from: 'addingItem', to: 'addFailed', on: 'addItem.error' },
     retryAdd: { from: 'addFailed', to: 'addingItem', on: 'addItem.next' },
+    addErrorFromEmpty: { from: 'empty', to: 'addFailed', on: 'addItem.error' },
+    addErrorFromHasItems: { from: 'hasItems', to: 'addFailed', on: 'addItem.error' },
+    addErrorFromFailed: { from: 'addFailed', to: 'addFailed', on: 'addItem.error' },
     added: { from: 'addingItem', to: 'hasItems', on: 'itemAdded.next' },
     checkout: { from: 'hasItems', to: refs.payment.nodes.processing, on: 'checkout.next' },
   }),
@@ -364,7 +401,7 @@ export const Basket = define({
           template: `<div class="auth-panel">
   <h3>Authentication</h3>
   <p class="state">State: <span class="badge">{{authState}}</span></p>
-  <p class="token">Token: <code>{{authToken}}</code></p>
+  <p class="token">Token: <code>{{authToken}}</code></p> <!-- SHOULD BE RX IF GUARDED -->
   <p class="error">Error: {{authError}}</p>
   <div class="controls">
     <button onclick="loginRequest.next()">Login</button>
@@ -403,7 +440,7 @@ export const init = () => {
         status: 'unanalyzed',
         sections: {
           template: `<div class="checkout-panel">
-  <div class="section auth-section">
+  <div class="section auth-section"> <!-- REMOVE THIS ITS ON THE OTHER FORM -->
     <h4>Auth</h4>
     <p>State: <span class="badge">{{authState}}</span></p>
     <div class="controls">
@@ -414,8 +451,11 @@ export const init = () => {
 
   <div class="section basket-section">
     <h4>Basket</h4>
-    <p>State: <span class="badge">{{basketState}}</span> | Items: {{itemCount}}</p>
-    <p class="items">Items: {{basketItemsDisplay}}</p>
+    <p>State: <span class="badge">{{basketState}}</span></p>
+    <p class="items">
+      <span rx-if="showItems">Items ({{itemCount}}): {{itemsDisplay}}</span> <!-- SHOULD USE RX FOR HERE FOR A LIST-->
+      <span rx-if="showItemId">Adding item: {{addingItemId}}</span>
+    </p>
     <p class="error">Error: {{basketError}}</p>
     <div class="controls">
       <button onclick="addItemRequest.next()">Add Item</button>
@@ -442,29 +482,44 @@ button { background: var(--bg-4); border: 1px solid var(--border); color: var(--
 button:hover { border-color: var(--accent); color: var(--accent); }
 code { background: var(--bg-4); padding: 0.15rem 0.3rem; border-radius: var(--radius-sm); font-size: 0.75rem; }`,
         },
-        content: `import { Auth, loginRequest, logoutRequest, retryRequest } from './auth.js'
-import { Payment } from './payment.js'
-import { Basket, addItemRequest, checkoutRequest } from './basket.js'
+        content: `import { Basket, addItemRequest, checkoutRequest } from './basket.js'
+import { loginRequest, logoutRequest } from './auth.js'
+import { auth } from './auth.form.js'
 import { map } from 'rxjs'
 
-export { addItemRequest, checkoutRequest, loginRequest, logoutRequest, retryRequest }
+// Buttons drive the auth signals (shared instance) and the basket signals.
+export { addItemRequest, checkoutRequest, loginRequest, logoutRequest }
 
-export const authState$ = Auth.state$.pipe(map(s => s.node))
-export const basketState$ = Basket.state$.pipe(map(s => s.node))
-export const basketItems$ = Basket.state$.pipe(map(s => s.items || []))
-export const basketItemsDisplay$ = basketItems$.pipe(map(items => items.join(', ') || 'none'))
-export const basketError$ = Basket.state$.pipe(map(s => s.error || ''))
-export const paymentState$ = Payment.state$.pipe(map(s => s.node))
-export const paymentTxId$ = Payment.state$.pipe(map(s => s.txId || ''))
-export const paymentReason$ = Payment.state$.pipe(map(s => s.reason || ''))
-export const itemCount$ = basketItems$.pipe(map(items => items.length))
+// auth is a DISJOINT dep: a standalone instance owned by auth.form, passed in
+// and only observed here (Basket never stops it). payment is UNIONED into this
+// super-graph - basket's checkout edge targets payment.processing - so it's
+// built from the blueprint at closure and lives inside \`basket\`. It is not
+// passed in and not separately owned.
+const basket = Basket.close().start('empty', { auth })
+export { basket }
 
-export const init = () => {
-  const auth = Auth.close().start('loggedOut')
-  const payment = Payment.close().start('processing')
-  const basket = Basket.close().start('empty', { auth, payment })
-  return { auth, payment, basket }
-}`,
+// The payment slice of the super-graph: a prefix-filtered projection of
+// basket's own state, so its nodes read as 'payment.*'.
+const payment = basket.runningMachines['payment']
+
+export const authState$ = auth.state$.pipe(map(s => s.node))
+export const basketState$ = basket.state$.pipe(map(s => s.node))
+// The basket panel shows whatever the CURRENT node actually carries: nodes
+// with an items list (hasItems/addFailed) show the list + count; addingItem
+// carries only the itemId in flight, so it shows that. rx-if picks the block.
+export const showItems$ = basket.state$.pipe(map(s => s.node === 'hasItems' || s.node === 'addFailed'))
+export const showItemId$ = basket.state$.pipe(map(s => s.node === 'addingItem'))
+export const itemsDisplay$ = basket.state$.pipe(map(s => s.node === 'hasItems' || s.node === 'addFailed' ? (s.data.items as string[]).join(', ') || 'none' : ''))
+export const itemCount$ = basket.state$.pipe(map(s => s.node === 'hasItems' || s.node === 'addFailed' ? (s.data.items as string[]).length : 0))
+export const addingItemId$ = basket.state$.pipe(map(s => s.node === 'addingItem' ? String(s.data.itemId ?? '') : ''))
+export const basketError$ = basket.state$.pipe(map(s => s.node === 'addFailed' ? String(s.data.error ?? '') : ''))
+export const paymentState$ = payment.state$.pipe(map(s => s.node.replace(/^payment\\./, '')))
+export const paymentTxId$ = payment.state$.pipe(map(s => s.node === 'payment.approved' ? String(s.data.txId ?? '') : ''))
+export const paymentReason$ = payment.state$.pipe(map(s => s.node === 'payment.declined' ? String(s.data.reason ?? '') : ''))
+
+// Owns only the basket super-graph; init returns it (auth is owned by
+// auth.form, payment lives inside basket). Stop stops it once.
+export const init = () => ({ basket })`,
       },
       {
         name: 'payment.form',
@@ -490,20 +545,25 @@ button { background: var(--bg-4); border: 1px solid var(--border); color: var(--
 button:hover { border-color: var(--accent); color: var(--accent); }
 code { background: var(--bg-4); padding: 0.2rem 0.4rem; border-radius: var(--radius-sm); font-size: 0.75rem; word-break: break-all; }`,
         },
-        content: `import { Payment, resetRequest } from './payment.js'
+        content: `import { basket } from './basket.form.js'
+import { resetRequest } from './payment.js'
 import { map } from 'rxjs'
 
+// "Run Again" drives the reset transition wired inside the super-graph
+// (payment.reset subscribes to this signal).
 export { resetRequest }
 
-export const paymentState$ = Payment.state$.pipe(map(s => s.node))
-export const paymentTxId$ = Payment.state$.pipe(map(s => s.txId || ''))
-export const paymentReason$ = Payment.state$.pipe(map(s => s.reason || ''))
-export const paymentOrderId$ = Payment.state$.pipe(map(s => s.orderId || ''))
+// Payment has no graph of its own: it's UNIONED into the basket super-graph
+// (basket's checkout edge targets payment.processing). So this panel is a pure
+// view - it reads payment's slice out of the running basket imported from
+// basket.form, where the nodes are namespace-prefixed 'payment.*'. It owns no
+// machine, so there is no init().
+const payment = basket.runningMachines['payment']
 
-export const init = () => {
-  const payment = Payment.close().start('processing')
-  return { payment }
-}`,
+export const paymentState$ = payment.state$.pipe(map(s => s.node.replace(/^payment\\./, '')))
+export const paymentTxId$ = payment.state$.pipe(map(s => s.node === 'payment.approved' ? String(s.data.txId ?? '') : ''))
+export const paymentReason$ = payment.state$.pipe(map(s => s.node === 'payment.declined' ? String(s.data.reason ?? '') : ''))
+export const paymentOrderId$ = payment.state$.pipe(map(s => s.node === 'payment.processing' || s.node === 'payment.stalled' ? String(s.data.orderId ?? '') : ''))`,
       },
     ],
   }

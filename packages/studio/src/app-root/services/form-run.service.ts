@@ -41,6 +41,15 @@ export class FormRunService {
         this._runningMachines$.next(machines)
     }
 
+    /**
+     * Discard the executed-module cache so the next `prepare()` re-evaluates
+     * every form from scratch. Called on Stop: the previous run's machines have
+     * been torn down, so their cached module instances must not be reused.
+     */
+    reset(): void {
+        this.liveModules.reset()
+    }
+
     constructor(
         private readonly filesystem: RuntimeFilesystemService,
         private readonly liveModules: LiveModulesService,

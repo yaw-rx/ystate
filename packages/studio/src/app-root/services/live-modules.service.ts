@@ -32,6 +32,17 @@ interface LiveModuleCacheEntry {
 export class LiveModulesService {
     private readonly cache = new Map<QualifiedName, LiveModuleCacheEntry>()
 
+    /**
+     * Drop every cached module. The cache's invalidation key is content, but a
+     * module's exports can hold *stopped* machine instances once a Play session
+     * ends - content unchanged, yet the instances are dead and must not be
+     * reused. Stop calls this so the next Play re-evaluates every closure and
+     * gets fresh, running instances.
+     */
+    reset(): void {
+        this.cache.clear()
+    }
+
     /** Executes the pool (topological order, cached per file), returning every file's live exports. Includes forms - their scripts are real modules that import from the ts collection. */
     run(pool: readonly FlatFile[]): ReadonlyMap<QualifiedName, Record<string, unknown>> {
         const sources = pool.filter(f => fileKindOf(f.name) !== undefined)

@@ -1,7 +1,7 @@
 import { Component, RxElement, state } from '@yaw-rx/core'
 import type { LayoutResult, PositionedNode, PositionedEdge, PositionedGroup } from '../services/elk-layout.service.js'
 import type { ClosureResult, GraphKind } from '../services/sandbox.service.js'
-import { ROOT, type RunningMachineSet } from '@yaw-rx/ystate'
+import { ROOT, type RunningMachineSet, type RunningMachine } from '@yaw-rx/ystate'
 import { combineLatest, tap, take, type Subscription } from 'rxjs'
 
 const EDGE_NAME_FONT = 10
@@ -142,20 +142,54 @@ export class GraphCanvas extends RxElement {
         this.activeNode.clear()
 
         for (const machine of machines) {
-            const graphKey = this.correlate(machine)
-            if (!graphKey) continue
-            // Node sequence is driven by EDGE events, not state$: during a
-            // synchronous burst (off->on->power in one tick) the runtime
-            // emits state$ in reverse as the recursive enter()s unwind, so
-            // state$ would skip the middle node. Each edge's `to` is the
-            // true next node, in order. state$ is used once, only for the
-            // entry node.
-            this.animSubs.push(machine.state$.pipe(take(1)).subscribe(s => this.enterNode(graphKey, s.node)))
-            this.animSubs.push(machine.event$.subscribe(e => {
-                this.fire(this.edgeEls.get(`${graphKey}:${e.edge}`))
-                this.enterNode(graphKey, e.to)
-            }))
+            // A super-graph's ROOT is the flattened union: the namespace functor
+            // has merged each unioned dep's nodes in under a prefix (payment.*).
+            // So ROOT's node-set never matches the layout's per-graph groups -
+            // we must drive each namespace against its own group separately.
+            const rootNodes = Object.keys(machine.source.graphs[ROOT]?.graph.nodes ?? {})
+            // Unioned deps are merged into ROOT (prefixed). Disjoint deps are
+            // independent machines animated as their own top-level entry - skip
+            // them here so they aren't driven twice.
+            const unionedNs = Object.entries(machine.runningMachines)
+                .filter(([key, rm]) => key !== ROOT && rm.kind === 'unioned')
+                .map(([key]) => key)
+
+            // The root machine's OWN group: ROOT nodes minus every unioned prefix.
+            const ownNodes = rootNodes.filter(n => !unionedNs.some(ns => n.startsWith(`${ns}.`)))
+            this.driveNamespace(machine.runningMachines[ROOT], this.matchGroup(ownNodes), '')
+
+            // Each unioned sub-graph drives its own group, addressed by its local
+            // (de-prefixed) node/edge names.
+            for (const ns of unionedNs) {
+                const localNodes = rootNodes.filter(n => n.startsWith(`${ns}.`)).map(n => n.slice(ns.length + 1))
+                this.driveNamespace(machine.runningMachines[ns], this.matchGroup(localNodes), `${ns}.`)
+            }
         }
+    }
+
+    private driveNamespace(rm: RunningMachine | undefined, graphKey: string | undefined, prefix: string): void {
+        if (!rm || !graphKey) return
+        // ROOT (prefix '') emits its unioned deps' nodes too, but those aren't
+        // in this group so enterNode simply no-ops on them.
+        const local = (name: string): string => prefix && name.startsWith(prefix) ? name.slice(prefix.length) : name
+        // Node sequence is driven by EDGE events, not state$: during a
+        // synchronous burst (off->on->power in one tick) the runtime emits
+        // state$ in reverse as the recursive enter()s unwind, so state$ would
+        // skip the middle node. Each edge's `to` is the true next node, in
+        // order. state$ is used once, only for the entry node. Both streams
+        // error on an unhandled edge - swallow it so one machine can't crash
+        // the canvas; status$ drives the terminal's red state.
+        this.animSubs.push(rm.state$.pipe(take(1)).subscribe({
+            next: s => this.enterNode(graphKey, local(s.node)),
+            error: () => {},
+        }))
+        this.animSubs.push(rm.event$.subscribe({
+            next: e => {
+                this.fire(this.edgeEls.get(`${graphKey}:${local(e.edge)}`))
+                this.enterNode(graphKey, local(e.to))
+            },
+            error: () => {},
+        }))
     }
 
     // The current node stays highlighted (`active`); when the machine moves
@@ -183,10 +217,10 @@ export class GraphCanvas extends RxElement {
         for (const el of this.nodeEls.values()) el.classList.remove('active', 'firing')
     }
 
-    /** Match a running machine to an ELK group by node-set identity - the same structural trick elk-layout uses to match dep graphs to groups. */
-    private correlate(machine: RunningMachineSet): string | undefined {
-        const rootNodes = Object.keys(machine.source.graphs[ROOT]?.graph.nodes ?? {}).sort().join(',')
-        if (!rootNodes) return undefined
+    /** Find the ELK group whose node-set matches `nodeNames` exactly - the same structural trick elk-layout uses to match dep graphs to groups. */
+    private matchGroup(nodeNames: string[]): string | undefined {
+        const target = [...nodeNames].sort().join(',')
+        if (!target) return undefined
 
         const groupNodes = new Map<string, string[]>()
         for (const node of this.layout?.nodes ?? []) {
@@ -196,7 +230,7 @@ export class GraphCanvas extends RxElement {
             groupNodes.set(node.graphKey, list)
         }
         for (const [graphKey, names] of groupNodes) {
-            if (names.sort().join(',') === rootNodes) return graphKey
+            if ([...names].sort().join(',') === target) return graphKey
         }
         return undefined
     }
@@ -378,7 +412,7 @@ export class GraphCanvas extends RxElement {
         crossArrow.setAttribute('orient', 'auto-start-reverse')
         const crossPath = this.svgEl('path')
         crossPath.setAttribute('d', 'M 0 0 L 10 5 L 0 10 Z')
-        crossPath.setAttribute('fill', '#8af')
+        crossPath.setAttribute('fill', '#fff')
         crossArrow.appendChild(crossPath)
 
         const errorArrow = this.svgEl('marker')
@@ -537,7 +571,7 @@ export class GraphCanvas extends RxElement {
             )
         }
         const squiggly = kind === 'graph-set' || (keys && !keys.includes(transitionName)) || hasEdgeIssue
-        const edgeColor = hasEdgeIssue ? '#c55' : cross ? '#8af' : '#9a9a9a'
+        const edgeColor = hasEdgeIssue ? '#c55' : cross ? '#fff' : '#9a9a9a'
 
         const paths: SVGPathElement[] = []
         for (const section of edge.sections) {
@@ -579,7 +613,7 @@ export class GraphCanvas extends RxElement {
             const nameText = this.svgEl('text')
             this.setAttrs(nameText, {
                 x: edge.labelX, y: edge.labelY, 'text-anchor': 'middle',
-                fill: hasEdgeIssue ? '#c55' : cross ? '#8af' : '#c0c0c0',
+                fill: hasEdgeIssue ? '#c55' : cross ? '#fff' : '#c0c0c0',
                 'font-family': 'monospace', 'font-size': EDGE_NAME_FONT,
             })
             nameText.textContent = edge.edgeName
@@ -588,7 +622,7 @@ export class GraphCanvas extends RxElement {
             const onLabel = this.svgEl('text')
             this.setAttrs(onLabel, {
                 x: edge.labelX, y: edge.labelY + EDGE_LABEL_LINE_HEIGHT - 2, 'text-anchor': 'middle',
-                fill: hasEdgeIssue ? '#c55' : cross ? '#6af' : '#888',
+                fill: hasEdgeIssue ? '#c55' : cross ? '#888' : '#888',
                 'font-family': 'monospace', 'font-size': EDGE_ON_FONT,
                 'font-style': 'italic',
             })

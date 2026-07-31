@@ -26,6 +26,12 @@ function joinPath(baseDir: string, specifier: string): string {
  */
 export function resolveImportSpecifier(fromName: string, specifier: string, available: ReadonlySet<string>): string | undefined {
     const joined = joinPath(dirnameOf(fromName), specifier)
+    // A form's script is a module too, keyed in the pool by the form's own
+    // name: `./auth.form.js` -> `.../auth.form`. This is how one form imports
+    // another's live instances (see default-workspaces checkout).
+    const asForm = joined.replace(/\.js$/, '')
+    if (asForm.endsWith('.form') && available.has(asForm)) return asForm
+    // A ts module: `./x.js` or `./x` -> `.../x.ts`.
     const withTs = joined.endsWith('.ts') ? joined : joined.replace(/\.js$/, '') + '.ts'
     return available.has(withTs) ? withTs : undefined
 }
