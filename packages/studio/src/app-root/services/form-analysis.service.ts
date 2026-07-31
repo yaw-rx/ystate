@@ -6,6 +6,7 @@ import type { QualifiedName, RuntimeFile, RuntimeFilesystem } from '../types/run
 import { splitQualifiedName } from '../utils/qualified-name.js'
 import { analysisHasErrors } from '../utils/file-status.js'
 import { parseInitMachines } from '../utils/parse-init-machines.js'
+import { initReturnTypes } from '../utils/init-return-types.js'
 
 // Static export brand -> what the form's class gets, framed by how a yaw
 // template can bind it: observables/subjects are data (and subjects are
@@ -50,7 +51,7 @@ export class FormAnalysisService {
 
     async analyze(filesystem: RuntimeFilesystem, qualifiedName: QualifiedName): Promise<FormAnalysis> {
         const blocked = await this.firstBlockingDep(filesystem, qualifiedName)
-        if (blocked) return { diagnostics: [], attachments: [], hasInit: false, machines: [], blocked }
+        if (blocked) return { diagnostics: [], attachments: [], hasInit: false, machines: [], initSignature: [], machineSignatures: {}, blocked }
 
         const form = await this.formFile(filesystem, qualifiedName)
         const machines = parseInitMachines(form?.model.getValue() ?? '')
@@ -60,15 +61,17 @@ export class FormAnalysisService {
         // children), so it's held out of the flat attachment list and
         // reported via hasInit/machines instead.
         const manifest = await this.typeAnalysis.check(qualifiedName)
-        const hasInit = manifest.exports.some(e => e.name === 'init')
+        const initExport = manifest.exports.find(e => e.name === 'init')
+        const initSignature = initExport?.displayParts ?? []
+        const machineSignatures = initReturnTypes(initSignature)
         const attachments: FormAttachment[] = manifest.exports
             .filter(e => e.name !== 'init')
             .map(e => {
                 const kind = BRAND_TO_KIND[e.brand]
-                return { name: e.name, kind, reactive: REACTIVE_KINDS.has(kind) }
+                return { name: e.name, kind, reactive: REACTIVE_KINDS.has(kind), displayParts: e.displayParts, documentation: e.documentation }
             })
 
-        return { diagnostics: manifest.diagnostics, attachments, hasInit, machines }
+        return { diagnostics: manifest.diagnostics, attachments, hasInit: !!initExport, machines, initSignature, machineSignatures }
     }
 
     /** The first imported ts file whose analysis has errors (failed evaluation or compiler errors) - the form waits on it rather than surfacing the cascade as its own. */

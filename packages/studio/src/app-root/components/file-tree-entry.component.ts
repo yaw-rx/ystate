@@ -380,22 +380,32 @@ export class FileTreeEntry extends RxElement {
         }
     }
 
-    // --- Form rows: attachments (brand icons) + init (special) with its
-    // returned running machines as indented children. Forms carry no
-    // displayParts, so these rows have no tooltip signature.
+    // --- Form rows: attachments (brand icons, with the checker's type as a
+    // hover tooltip) + init (special) with its returned running machines as
+    // indented children.
 
     private formRows(fileName: string, analysis: FormAnalysis): ExportRow[] {
-        const rows: ExportRow[] = analysis.attachments.map(a => this.formRow(fileName, a.name, ATTACHMENT_BRAND[a.kind]))
+        const rows: ExportRow[] = analysis.attachments.map(a => this.formRow(fileName, a.name, ATTACHMENT_BRAND[a.kind], {
+            parts: this.trimmedParts(a.displayParts),
+            docsText: a.documentation.map(p => p.text).join(''),
+        }))
         if (analysis.hasInit) {
-            rows.push(this.formRow(fileName, 'init', 'init', { isInit: true }))
+            rows.push(this.formRow(fileName, 'init', 'init', {
+                isInit: true,
+                parts: this.trimmedParts(analysis.initSignature),
+            }))
             for (const m of analysis.machines) {
-                rows.push(this.formRow(fileName, m, 'running-machine', { isRunningMachine: true, isChild: true }))
+                rows.push(this.formRow(fileName, m, 'running-machine', {
+                    isRunningMachine: true,
+                    isChild: true,
+                    parts: this.trimmedParts(analysis.machineSignatures[m] ?? []),
+                }))
             }
         }
         return rows
     }
 
-    private formRow(fileName: string, name: string, brand: RowBrand, special?: { isInit?: boolean; isRunningMachine?: boolean; isChild?: boolean }): ExportRow {
+    private formRow(fileName: string, name: string, brand: RowBrand, special?: { isInit?: boolean; isRunningMachine?: boolean; isChild?: boolean; parts?: DisplayPartView[]; docsText?: string }): ExportRow {
         const isInit = special?.isInit ?? false
         const isRunningMachine = special?.isRunningMachine ?? false
         return {
@@ -413,8 +423,8 @@ export class FileTreeEntry extends RxElement {
             isInit,
             isRunningMachine,
             isChild: special?.isChild ?? false,
-            parts: [],
-            docsText: '',
+            parts: special?.parts ?? [],
+            docsText: special?.docsText ?? '',
         }
     }
 }

@@ -82,6 +82,9 @@ export interface FormAttachment {
     kind: FormAttachmentKind
     /** Whether binding it is reactive (an observable/subject the view re-reads on change) vs a one-shot static value. */
     reactive: boolean
+    /** The checker's type signature (same displayParts a ts export carries) - the tree renders it as the hover tooltip. */
+    displayParts: StaticExportInfo['displayParts']
+    documentation: StaticExportInfo['documentation']
 }
 
 /**
@@ -108,6 +111,10 @@ export interface FormAnalysis {
     attachments: FormAttachment[]
     hasInit: boolean
     machines: string[]
+    /** init's own type signature (`() => { heater: RunningMachineSet<…> }`), for its tree tooltip. */
+    initSignature: StaticExportInfo['displayParts']
+    /** Each running machine's type - the property type inside init's return - for its child-row tooltip. */
+    machineSignatures: Record<string, StaticExportInfo['displayParts']>
     blocked?: string
 }
 
