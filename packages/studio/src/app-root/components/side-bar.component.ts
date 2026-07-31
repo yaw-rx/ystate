@@ -7,7 +7,10 @@ import { RuntimeFilesystemService } from '../services/runtime-filesystem.service
 import type { RuntimeFile } from '../types/runtime-filesystem.types.js';
 import { fileKindOf } from '../utils/file-kind.js';
 import { fileStatusTier$, worstTier, type StatusTier } from '../utils/file-status.js';
+import { toSerializedWorkspace$, toSerializedDependencyGraph$ } from '../utils/serialize-runtime.js'
 import type { StatusIconKind } from './status-icon.component.js';
+import type { RuntimeWorkspace } from '../types/runtime-filesystem.types.js'
+
 import './file-tree-entry.component.js';
 import './status-icon.component.js';
 
@@ -80,6 +83,9 @@ function workspaceStatusIconKind$(files: RuntimeFile[]): Observable<StatusIconKi
                     </ul>
                 </div>
             </div>
+            <div rx-if="hasWorkspaces" class="library-download">
+                <button class="open-btn" onclick="downloadWorkspaces">Download library</button>
+            </div>
         </section>
     `,
     styles: `
@@ -128,6 +134,13 @@ function workspaceStatusIconKind$(files: RuntimeFile[]): Observable<StatusIconKi
             align-items: center;
             justify-content: space-between;
             padding-right: 0.5rem;
+        }
+        .library-download {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-left: 1rem;
+            margin-top: 0.5rem;
         }
         .new-ws-btn {
             background: none;
@@ -332,6 +345,12 @@ export class SideBar extends RxElement {
         );
     }
 
+    get hasWorkspaces$() {
+        return this.filesystem.workspaces$.pipe(
+            map((workspaces) => workspaces.size !== 0)
+        );
+    }
+
     isExpanded(name: string): Observable<boolean> {
         return this.expandedName$.pipe(map(e => e === name));
     }
@@ -409,5 +428,26 @@ export class SideBar extends RxElement {
 
     removeWorkspaceClick(name: string): void {
         void this.filesystem.removeWorkspace(name);
+    }
+
+    async downloadWorkspaces(): Promise<void> {
+        try {
+            const library = await this.filesystem.serializeLibrary();
+            console.log('library', library);
+            const jsonString = JSON.stringify(library);
+            const blob = new Blob([jsonString], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = 'library.json';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+        }
+        catch (e) {
+            const error = e as Error;
+            console.error(`Error serializing library: ${error.message}`);
+        }
     }
 }

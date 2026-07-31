@@ -10,9 +10,9 @@ import type { SerializedWorkspace } from './types/serialized-filesystem.types.js
  */
 export const defaultWorkspaces: SerializedWorkspace[] = [
     {
-        name: 'thermostat',
+        name: 'heater',
         manifest: {
-            name: 'thermostat',
+            name: 'heater',
             concepts: ['heater.ts'],
             metadata: {},
         },
@@ -84,11 +84,11 @@ export const Heater = define({
 })`,
             },
             {
-                name: 'panel.form',
+                name: 'heater.form',
                 status: 'unanalyzed',
                 sections: {
                     template: `<div class="panel">
-  <p class="temp">{{temperature}}&deg;C</p>
+  <p class="temp">{{temperatureDisplay}}&deg;C</p>
   <div class="controls">
     <button onclick="turnOnSignal.next()">heater on</button>
     <button onclick="turnOffSignal.next()">heater off</button>
@@ -109,15 +109,28 @@ export const Heater = define({
 button { background: var(--bg-4); border: 1px solid var(--border); color: var(--text); font-family: var(--font-mono); padding: 0.3rem 0.7rem; border-radius: var(--radius-sm); cursor: pointer; }
 button:hover { border-color: var(--accent); color: var(--accent); }`,
                 },
-                content: `import { timer, combineLatest, scan, map, mergeMap, take, takeUntil, filter } from 'rxjs'
+                content: `import { timer, combineLatest, scan, map, mergeMap, take, takeUntil, filter, withLatestFrom } from 'rxjs'
 import { Heater, temperature$, turnOnSignal, turnOffSignal, upperLimitT$, lowerLimitT$ } from './heater.js'
 
-// Re-export the streams the template reads directly: {{temperature}} and
+// --- Simulation Constants ---
+const TICK_INTERVAL_MS = 100 // Speed: 100ms per tick (10 ticks/sec)
+const TIME_SCALE = 1.0       // 1.0 = normal physics, 2.0 = 2x faster physics
+
+// Derived delta-t in seconds passed to the thermal equation per tick
+const DT_SECONDS = (TICK_INTERVAL_MS / 1000) * TIME_SCALE
+
+// Re-export the streams the template reads directly:
 // (via the $-suffixed aliases) {{lower}}/{{upper}}. The buttons push the
 // signals and nudge the limits.
 export { temperature$, turnOnSignal, turnOffSignal }
 export const lower$ = lowerLimitT$
 export const upper$ = upperLimitT$
+
+// Map the temperature to 2dp for display for use in the template like
+// {{temperatureDisplay}}
+export const temperatureDisplay$ = temperature$.pipe(
+  map(t => t.toFixed(2))
+)
 
 // Nudging a limit is arithmetic on its current value - script logic, since
 // the template's event args are literals/refs, not expressions.
@@ -126,9 +139,29 @@ export const upperLimit = (d: number) => upperLimitT$.next(upperLimitT$.value + 
 
 // The graph wants a stream of arrays; scan the scalar temperature into a
 // rolling window.
-export const graphConfig = { temperature: { label: 'temperature', color: '#88aaff' } }
+export const graphConfig = { 
+  temperature: { label: 'temperature', color: '#88aaff' },
+  lowerLimitT: { label: 'Lower Limit', color: 'green' },
+  upperLimitT: { label: 'Upper Limit', color: 'red' } 
+}
+
+// Sample the graph at the same tick interval
+const sample$ = timer(0, TICK_INTERVAL_MS)
+
 export const graphSeries = {
-  temperature: temperature$.pipe(scan((window, t) => [...window, t].slice(-60), [] as number[])),
+  temperature: temperature$.pipe(
+    scan((window, t) => [...window, t].slice(-60), [] as number[])
+  ),
+  upperLimitT: sample$.pipe(
+    withLatestFrom(upper$),
+    map(([_, upper]) => upper),
+    scan((window, val) => [...window, val].slice(-60), [] as number[])
+  ),
+  lowerLimitT: sample$.pipe(
+    withLatestFrom(lower$),
+    map(([_, lower]) => lower),
+    scan((window, val) => [...window, val].slice(-60), [] as number[])
+  )
 }
 
 // The thermal model. m*C = thermal mass, k = wall conductance; each tick
@@ -144,15 +177,16 @@ const environmentT = 10, wallConductance = 5000, mC = 60 * 1005, heaterPower = 1
 // with no leak.
 export const init = () => {
   const heater = Heater.close().start('off')
-  timer(0, 1000).pipe(
+  timer(0, TICK_INTERVAL_MS).pipe(
     mergeMap(() => combineLatest([temperature$, heater.state$]).pipe(take(1))),
     map(([roomT, s]) => {
       const heatLoss = wallConductance * (roomT - environmentT)
       const heaterOutput = s.node === 'power' ? heaterPower : 0
-      return roomT + (heaterOutput - heatLoss) / mC
+      const deltaT = ((heaterOutput - heatLoss) / mC) * DT_SECONDS
+      return roomT + deltaT
     }),
     takeUntil(heater.status$.pipe(filter(x => x === 'stopped'))),
-  ).subscribe(t => temperature$.next(Math.round(t * 10) / 10))
+  ).subscribe(t => temperature$.next(t))
   return { heater }
 }`,
             },

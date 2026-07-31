@@ -90,6 +90,26 @@ export class RxGraph extends RxElement {
 
         const step = w / (maxLen - 1)
 
+        // Gather all data points across all series to find global Y bounds
+        const allPts = names.flatMap(n => this.data.get(n) ?? [])
+        if (allPts.length === 0) return
+
+        let minVal = Math.min(...allPts)
+        let maxVal = Math.max(...allPts)
+
+        // Add Y-axis padding (or prevent div-by-zero if all lines are flat/equal)
+        if (minVal === maxVal) {
+            minVal = Math.max(0, minVal - 5)
+            maxVal += 5
+        } else {
+            const padding = (maxVal - minVal) * 0.1
+            minVal = Math.max(0, minVal - padding)
+            maxVal += padding
+        }
+
+        const range = maxVal - minVal
+
+        // Draw each series mapped against the global range
         for (const name of names) {
             const cfg = this.config[name]
             if (!cfg) continue
@@ -97,12 +117,12 @@ export class RxGraph extends RxElement {
             if (pts.length < 2) continue
 
             const pad = maxLen - pts.length
-            const ceil = Math.max(1, ...pts)
 
             ctx.beginPath()
             for (let i = 0; i < pts.length; i++) {
                 const x = (pad + i) * step
-                const y = h - (pts[i]! / ceil) * h
+                // Normalized y across shared min/max range with bottom edge padding
+                const y = h - ((pts[i]! - minVal) / range) * (h * 0.9) - (h * 0.05)
                 if (i === 0) ctx.moveTo(x, y)
                 else ctx.lineTo(x, y)
             }

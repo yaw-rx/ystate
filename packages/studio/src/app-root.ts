@@ -73,4 +73,30 @@ export class AppRoot extends RxElement {
     // in this component calls it directly, the runtime filesystem is
     // injected independently by whatever component actually needs it.
     @Inject(RuntimeFilesystemService) private readonly filesystem!: RuntimeFilesystemService;
+
+    // Drag library file into studio
+    onInit(): void {
+
+        this.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            this.classList.add('drag-active');
+        });
+
+        this.addEventListener('dragleave', () => {
+            this.classList.remove('drag-active');
+        });
+
+        this.addEventListener('drop', async (e: DragEvent) => {
+            e.preventDefault();
+            this.classList.remove('drag-active');
+
+            const file = e.dataTransfer?.files[0];
+            if (!file || !file.name.endsWith('.json')) return;
+
+            const jsonText = await file.text();
+            const libraryData = JSON.parse(jsonText);
+
+            this.filesystem.loadLibrary(libraryData);
+        });
+    }
 }

@@ -1,8 +1,8 @@
 import { Injectable, state } from '@yaw-rx/core'
 import * as monaco from 'monaco-editor'
-import { BehaviorSubject, shareReplay, type Observable } from 'rxjs'
+import { BehaviorSubject, shareReplay, type Observable, map, firstValueFrom, take } from 'rxjs'
 import type { RuntimeFilesystem, RuntimeWorkspace, RuntimeFile, RuntimeFormSection, DependencyGraph, QualifiedName } from '../types/runtime-filesystem.types.js'
-import type { SerializedWorkspace, SerializedWorkspaceFile, WorkspaceManifest, SerializedDependencyGraph } from '../types/serialized-filesystem.types.js'
+import type { SerializedWorkspace, SerializedWorkspaceFile, WorkspaceManifest, SerializedDependencyGraph, SerializedFilesystem } from '../types/serialized-filesystem.types.js'
 import { WorkspaceEvaluationService } from './workspace-evaluation.service.js'
 import { FilesystemStorage, FILESYSTEM_STORAGE } from './filesystem-storage.js'
 import { createFileMachine } from '../machines/workspace-file.machine.js'
@@ -18,6 +18,7 @@ import { logMachineFailures } from '../utils/log-machine-failures.js'
 import { warmUpMonacoServices } from '../utils/warm-up-monaco.js'
 import { configureTypeScript } from '../utils/configure-typescript.js'
 import { defaultWorkspaces } from '../default-workspaces.js'
+import { isSerializedFilesystem } from '../guards/is-serialized-filesystem.js';
 
 /**
  * What each hydrated node needs as its starting data, from the last-known
@@ -76,6 +77,59 @@ export class RuntimeFilesystemService implements RuntimeFilesystem {
         // hydrateFile() ever creates a model - see warm-up-monaco.ts.
         configureTypeScript()
         warmUpMonacoServices()
+    }
+
+    private resetDependencyGraph(seed?: SerializedDependencyGraph): void {
+        // Dispose of existing dependency graph if it exists
+        if (this.dependencyGraph$) {
+            // If it's a subscription, unsubscribe
+            // If it's a subject, complete it
+            // Since we're using shareReplay, we need to handle this carefully
+            // One approach: recreate the observable
+            // UGH WHY IS THIS UNIMPLEMENTED!!!
+        }
+
+        // Recreate the dependency graph with current workspaces
+        this.dependencyGraph$ = deriveDependencyGraph$(this.workspaces$, seed).pipe(
+            shareReplay({ bufferSize: 1, refCount: true }),
+        );
+
+        // Recreate filesystem persistence with new dependency graph
+        this.filesystemPersistence = createPersistenceMachine(
+            graph => this.storage.saveDependencyGraph(graph),
+            toSerializedDependencyGraph$(this.workspaces$, this.dependencyGraph$),
+        );
+        logMachineFailures('filesystem-persistence', this.filesystemPersistence.runningMachine.state$, 'failed');
+    }
+
+    /** Load library from JSON payload */
+    async loadLibrary(serializedFilesystem: unknown): Promise<void> {
+        console.log('loading library', serializedFilesystem);
+        if (!isSerializedFilesystem(serializedFilesystem)) {
+            throw new Error('Provided payload is not a valid SerializedFilesystem');
+        }
+
+        this.workspaces$.subscribe((ws) => console.log('wsss', ws));
+
+        // Tear down all active files and workspaces safely
+        const existingNames = Array.from(this.workspaceMap.keys());
+        for (const name of existingNames) {
+            await this.removeWorkspace(name);
+        }
+
+        // Reset the runtime workspace map without breaking workspaceMap$ reference
+        this.workspaceMap.clear();
+
+        // Persist the new library snapshot to storage
+        await Promise.all([
+            ...serializedFilesystem.workspaces.map(ws => this.storage.saveWorkspace(ws)),
+            this.storage.saveDependencyGraph(serializedFilesystem.dependencyGraph)
+        ]);
+
+        serializedFilesystem.workspaces.forEach((workspace) => {
+            this.addWorkspace(workspace);
+        });
+
     }
 
     // Not awaited by the injector (injector.js calls onInit() without
@@ -358,5 +412,24 @@ export class RuntimeFilesystemService implements RuntimeFilesystem {
         file.model.dispose()
         file.sections?.template.model.dispose()
         file.sections?.styles.model.dispose()
+    }
+
+    /** Serialize workspaces and dependancy graph into a JSON representation */
+    async serializeLibrary() {
+        const dependencyGraph = await firstValueFrom(toSerializedDependencyGraph$(this.workspaces$, this.dependencyGraph$));
+        const workspacesMap = await firstValueFrom(this.workspaces$);
+
+        const workspaces: SerializedWorkspace[] = [];
+
+        for (const [workspaceName, runtimeWorkspace] of workspacesMap) {
+            console.log('workspaceName', workspaceName, this.manifests);
+            const manifest = this.manifests.get(workspaceName);
+
+            workspaces.push(await firstValueFrom(
+                toSerializedWorkspace$(runtimeWorkspace, manifest)
+            ));
+        }
+
+        return { workspaces, dependencyGraph } satisfies SerializedFilesystem;
     }
 }
