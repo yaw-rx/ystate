@@ -218,7 +218,7 @@ export class SideBar extends RxElement {
                 const ws = workspaces.get(name)
                 return ws ? ws.files$ : of(new Map<string, RuntimeFile>())
             }),
-            map(files => [...files.values()].filter(f => fileKindOf(f.name) === 'ts-file')),
+            map(files => [...files.values()].filter(f => fileKindOf(f.name) !== undefined)),
         );
     }
 
@@ -233,7 +233,7 @@ export class SideBar extends RxElement {
                 return entries.length === 0
                     ? of<LibraryWorkspaceView[]>([])
                     : combineLatest(entries.map(ws => ws.files$.pipe(
-                        map(files => [...files.values()].filter(f => fileKindOf(f.name) === 'ts-file')),
+                        map(files => [...files.values()].filter(f => fileKindOf(f.name) !== undefined)),
                         switchMap(files => workspaceStatusIconKind$(files).pipe(
                             map((statusIconKind): LibraryWorkspaceView => ({ name: ws.name, files, statusIconKind })),
                         )),

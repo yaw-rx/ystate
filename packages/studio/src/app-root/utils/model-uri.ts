@@ -8,3 +8,13 @@ import * as monaco from 'monaco-editor'
 export function toModelUri(workspaceName: string, fileName: string): monaco.Uri {
     return monaco.Uri.parse(`file:///${workspaceName}/${fileName}`)
 }
+
+/**
+ * A form's template/styles section models, addressed as siblings of the
+ * script model. The extensions give Monaco the right language services
+ * (html/css) without any explicit language wiring at creation sites.
+ */
+export function toSectionUri(workspaceName: string, fileName: string, section: 'template' | 'styles'): monaco.Uri {
+    const ext = section === 'template' ? 'html' : 'css'
+    return monaco.Uri.parse(`file:///${workspaceName}/${fileName}.${section}.${ext}`)
+}

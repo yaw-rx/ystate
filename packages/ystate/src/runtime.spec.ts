@@ -404,3 +404,111 @@ describe('disjoint deps at runtime', () => {
     expect(rms.runningMachines['auth'].kind).toBe('disjoint');
   });
 });
+
+describe('stop()', () => {
+  const makeHeater = () => {
+    const onSignal = new Subject<void>();
+    const offSignal = new Subject<void>();
+    // No terminal node [F = ∅]: every node has an outgoing edge, so
+    // stop() is the only way this machine can ever end.
+    const m = define({
+      nodes: { off: {}, on: {} },
+      edges: {
+        turnOn: { from: 'off', to: 'on', on: 'onSignal.next' },
+        turnOff: { from: 'on', to: 'off', on: 'offSignal.next' },
+      },
+    }).implement({
+      onSignal: { $: () => onSignal, next: () => ({}) },
+      offSignal: { $: () => offSignal, next: () => ({}) },
+    });
+    return { m, onSignal, offSignal };
+  };
+
+  it('unsubscribes the active transitions from their environment', () => {
+    const { m, onSignal } = makeHeater();
+    const rms = m.close().start('off');
+    expect(onSignal.observed).toBe(true);
+
+    rms.stop();
+    expect(onSignal.observed).toBe(false);
+  });
+
+  it('completes state$ and event$ and reports status stopped', () => {
+    const { m } = makeHeater();
+    const rms = m.close().start('off');
+
+    let statusNow: string | undefined;
+    rms.status$.subscribe(s => { statusNow = s; });
+
+    let stateCompleted = false;
+    let eventCompleted = false;
+    rms.state$.subscribe({ complete: () => { stateCompleted = true; } });
+    rms.event$.subscribe({ complete: () => { eventCompleted = true; } });
+
+    rms.stop();
+
+    expect(stateCompleted).toBe(true);
+    expect(eventCompleted).toBe(true);
+    expect(statusNow).toBe('stopped');
+  });
+
+  it('stops transitioning after stop()', () => {
+    const { m, onSignal } = makeHeater();
+    const rms = m.close().start('off');
+    rms.stop();
+
+    let lastNode = '';
+    rms.state$.subscribe(s => { lastNode = s.node; });
+    onSignal.next();
+    expect(lastNode).toBe('off');
+  });
+
+  it('is idempotent and never regresses a completed machine to stopped', () => {
+    const trigger = new Subject<void>();
+    // 'end' is terminal [outdeg(end) = 0]: entering it completes the machine.
+    const m = define({
+      nodes: { idle: {}, end: {} },
+      edges: { finish: { from: 'idle', to: 'end', on: 'go.next' } },
+    }).implement({
+      go: { $: () => trigger, next: () => ({}) },
+    });
+
+    const rms = m.close().start('idle');
+    let statusNow: string | undefined;
+    rms.status$.subscribe(s => { statusNow = s; });
+
+    trigger.next();
+    expect(statusNow).toBe('complete');
+
+    rms.stop();
+    expect(statusNow).toBe('complete');
+  });
+
+  it('does not stop disjoint running machines passed into start()', () => {
+    const authTrigger = new Subject<void>();
+    const Auth = define({
+      nodes: { loggedOut: {}, loggedIn: {} },
+      edges: { login: { from: 'loggedOut', to: 'loggedIn', on: 'auth.next' } },
+    }).implement({
+      auth: { $: () => authTrigger, next: () => ({}) },
+    });
+
+    const App = define({
+      nodes: { idle: {}, active: {} },
+      deps: { auth: Auth },
+      edges: { go: { from: 'idle', to: 'active', on: 'start.next' } },
+    }).implement({
+      start: { $: () => new Observable(), next: () => ({}) },
+    });
+
+    const auth = Auth.close().start('loggedOut');
+    const rms = App.close().start('idle', { auth });
+
+    rms.stop();
+    // auth's owner started it; rms.stop() must leave it running.
+    expect(authTrigger.observed).toBe(true);
+
+    auth.stop();
+    expect(authTrigger.observed).toBe(false);
+  });
+});

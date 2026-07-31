@@ -16,11 +16,22 @@ export interface DependencyGraph {
     readonly dependents: ReadonlyMap<QualifiedName, ReadonlySet<QualifiedName>>
 }
 
+/** One live triad section (template or styles) of a form file: its Monaco model plus the single shared content stream over it. */
+export interface RuntimeFormSection {
+    readonly model: monaco.editor.ITextModel
+    readonly content$: Observable<string>
+}
+
 /**
  * One file, live: its Monaco model (the sole source of truth for its
  * current text) and its analysis machine (`state$`/`event$`/`status$`).
  * `request$` is how anything - a content edit, a dependency settling,
  * initial hydration - asks the machine to (re)analyze.
+ *
+ * `sections` is present exactly when the file is a form (`*.form.ts`):
+ * the template and styles halves of the triad, each a real Monaco model.
+ * The script half is `model`/`content$` itself - a form's script is a
+ * first-class pool member, not a separate kind of thing.
  */
 export interface RuntimeFile {
     readonly qualifiedName: QualifiedName
@@ -30,6 +41,7 @@ export interface RuntimeFile {
     readonly model: monaco.editor.ITextModel
     /** `modelContent$(model)` (utils/model-content.ts) - the same content as `model`, as one shared multicast stream. What the dependency graph and anything else reacting to edits composes off. */
     readonly content$: Observable<string>
+    readonly sections?: { readonly template: RuntimeFormSection; readonly styles: RuntimeFormSection }
     readonly machine: RunningMachine
     readonly request$: Subject<void>
     /** Fires the machine's terminal `removed` node - the actual disposal mechanism, see `machines/workspace-file.machine.ts`. */

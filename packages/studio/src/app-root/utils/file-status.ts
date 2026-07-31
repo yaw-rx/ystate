@@ -1,6 +1,6 @@
 import { type Observable, map } from 'rxjs'
 import type { RuntimeFile } from '../types/runtime-filesystem.types.js'
-import type { FileAnalysis } from '../types/serialized-filesystem.types.js'
+import type { AnyAnalysis } from '../types/serialized-filesystem.types.js'
 import type { StatusIconKind } from '../components/status-icon.component.js'
 
 /**
@@ -8,13 +8,16 @@ import type { StatusIconKind } from '../components/status-icon.component.js'
  * and anything else showing status all derive from here, so no two views
  * can ever disagree about the same file. Every kind of problem collapses
  * into one 'failed': a machine-level failure (the pool didn't evaluate -
- * syntax errors land here), compiler diagnostics with errors, or any
- * export whose closure failed. The distinction between those lives in the
- * detail views (terminal output, export rows), not in the icon.
+ * syntax errors land here), compiler diagnostics with errors, any ts export
+ * whose closure failed, or a form blocked on a broken ts dependency. The
+ * distinction between those lives in the detail views (terminal output,
+ * export rows), not in the icon.
  */
-export function analysisHasErrors(analysis: FileAnalysis | undefined): boolean {
+export function analysisHasErrors(analysis: AnyAnalysis | undefined): boolean {
     if (!analysis) return false
     if (analysis.diagnostics.some(d => d.category === 'error')) return true
+    // Form analysis: blocked on a broken ts dep counts as an error state.
+    if (!('exports' in analysis)) return !!analysis.blocked
     return analysis.exports.some(e =>
         e.runtime.status === 'evaluated'
         && (e.runtime.kind === 'graph-set' || e.runtime.kind === 'machine')
@@ -27,7 +30,7 @@ export function fileStatusIconKind$(file: RuntimeFile): Observable<StatusIconKin
         if (s.node === 'failed') return 'failed'
         if (s.node === 'blocked') return 'blocked'
         if (s.node === 'analyzing' || s.node === 'unanalyzed') return 'analyzing'
-        if (s.node === 'analyzed' && analysisHasErrors((s.data as { analysis?: FileAnalysis }).analysis)) return 'failed'
+        if (s.node === 'analyzed' && analysisHasErrors((s.data as { analysis?: AnyAnalysis }).analysis)) return 'failed'
         return 'ok'
     }))
 }

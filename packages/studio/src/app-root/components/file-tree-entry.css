@@ -10,6 +10,9 @@
     --brand-class: #e8a33d;
     --brand-const: #9cdcfe;
     --brand-other: #858585;
+    /* Form-only brands: init (the factory) and the running machines it returns. */
+    --brand-init: #ffca57;
+    --brand-running-machine: #ff8f6b;
 
     /* Approximates Monaco's default dark theme token colors, since
        displayParts carries the same SymbolDisplayPart.kind values
@@ -65,6 +68,10 @@
 .export-row:hover {
     background: var(--bg-4);
     color: var(--text);
+}
+/* Running machines returned by init render indented beneath it. */
+.export-row.child {
+    padding-left: 3rem;
 }
 .badge {
     flex-shrink: 0;

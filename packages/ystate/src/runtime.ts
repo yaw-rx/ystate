@@ -64,6 +64,24 @@ export interface RunningMachineSet<
 > extends RunningMachine {
   runningMachines: Record<string, RunningMachine & { kind: NamespaceKind }>
   source: MachineSet<TNodes, TEdges, TTransitions>
+  /**
+   * Ends the machine set from outside the graph: tears down every
+   * active transition subscription [the `$` observables of Out(q(n))],
+   * completes `state$`/`event$` (including the unioned namespace views,
+   * which are filtered projections of the same streams), and reports
+   * status 'stopped'.
+   *
+   * This is the external counterpart to terminal-node completion
+   * [v ∈ F, outdeg(v) = 0]: a machine whose graph has no terminal node
+   * [F = ∅] can never end itself, so the owner that called `start()` is
+   * the only party able to end it. Idempotent - stopping a machine that
+   * is already 'complete', 'error', or 'stopped' is a no-op.
+   *
+   * Disjoint running machines passed into `start()` are NOT stopped:
+   * they were started by their own owner, and ownership of a machine's
+   * lifetime never transfers [Vₖ ∩ V' = ∅ - they run independently].
+   */
+  stop(): void
 }
 
 /**
@@ -238,6 +256,20 @@ machineSet: MachineSet<TNodes, TEdges, TTransitions>,
   const rootState$ = stateSubject.asObservable()
   const rootEvent$ = edgeSubject.asObservable()
 
+  // The external counterpart to terminal-node entry [v ∈ F]: same
+  // teardown, same stream completion, just triggered by the owner
+  // instead of the graph. Guarded on 'running' so ending an
+  // already-ended machine (terminal, errored, or stopped twice)
+  // changes nothing - in particular it never regresses a 'complete'
+  // status to 'stopped'.
+  function stop(): void {
+    if (status$.value !== 'running') return
+    teardown()
+    status$.next('stopped')
+    edgeSubject.complete()
+    stateSubject.complete()
+  }
+
   function withStatus$<T extends object>(obj: T): T & { status$: Observable<MachineStatus> } {
     return Object.assign(obj, { status$: status$.asObservable() })
   }
@@ -261,5 +293,5 @@ machineSet: MachineSet<TNodes, TEdges, TTransitions>,
     }
   }
 
-  return withStatus$({ state$: rootState$, event$: rootEvent$, runningMachines: result, source: machineSet })
+  return withStatus$({ state$: rootState$, event$: rootEvent$, runningMachines: result, source: machineSet, stop })
 }

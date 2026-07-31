@@ -66,6 +66,51 @@ export interface FileAnalysis {
     exports: ExportRecord[]
 }
 
+/**
+ * A file's analysis, whichever domain produced it. A ts file yields
+ * `FileAnalysis` (closures + exports), a form yields `FormAnalysis`
+ * (attachments + machines). The file's kind (see `fileKindOf`) is the
+ * discriminant a reader uses to know which shape it holds.
+ */
+export type AnyAnalysis = FileAnalysis | FormAnalysis
+
+/** What a form export becomes when extended onto the form's element class - the "what will be attached" the author sees while building. */
+export type FormAttachmentKind = 'running-machine' | 'observable' | 'behavior-subject' | 'function' | 'machine' | 'graph-set' | 'plain-value'
+
+export interface FormAttachment {
+    name: string
+    kind: FormAttachmentKind
+    /** Whether binding it is reactive (an observable/subject the view re-reads on change) vs a one-shot static value. */
+    reactive: boolean
+}
+
+/**
+ * A form's own analysis, produced entirely by the TS checker on the form's
+ * script - separate from the ts collection's `FileAnalysis` and from any
+ * runtime execution. All of it is static:
+ *
+ * - `diagnostics`: the form's own type errors.
+ * - `attachments`: every export EXCEPT `init`, classified by its resolved
+ *   type - what will be extended onto the form's element class.
+ * - `hasInit` / `machines`: whether the form exports `init`, and the names
+ *   of the running machines it returns, read from `init`'s return type
+ *   ({ heater: RunningMachineSet<…> } -> ['heater']). init is the special
+ *   export: its own icon, with the machine names as children beneath it.
+ *   Statically knowable; no execution needed to list them.
+ *
+ * `blocked` names a ts dependency whose errors mean the form can't be
+ * analysed yet (that ts error shows on the ts file's own terminal, never
+ * here). Running the form (Play) is the only runtime concern, handled
+ * separately by the run host.
+ */
+export interface FormAnalysis {
+    diagnostics: FileDiagnostic[]
+    attachments: FormAttachment[]
+    hasInit: boolean
+    machines: string[]
+    blocked?: string
+}
+
 export interface ElementMetadata {
     x?: number
     y?: number
@@ -81,15 +126,31 @@ export interface WorkspaceManifest {
 }
 
 /**
+ * The template and styles halves of a form's triad. The third section -
+ * the script - is not here: it IS the file's `content`, because a form is
+ * named `<name>.form.ts` and its script is a first-class pool member (the
+ * dependency graph, dirty cascade, type analysis and sandbox all read
+ * `content` exactly as they would any .ts file, no special-casing).
+ * Template and styles ride alongside; they never enter the pool.
+ */
+export interface FormSections {
+    template: string
+    styles: string
+}
+
+/**
  * A workspace file as persisted: content plus the last-known analysis
  * status/result. This is a hydration source, not something any component
  * binds to directly - the runtime filesystem is what's live.
+ *
+ * `sections` is present exactly when the file is a form (`<name>.form`).
  */
 export interface SerializedWorkspaceFile {
     name: string
     content: string
     status: WorkspaceFileNode
-    analysis?: FileAnalysis
+    sections?: FormSections
+    analysis?: AnyAnalysis
     error?: string
 }
 

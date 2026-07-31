@@ -1,7 +1,8 @@
 import { Component, RxElement, state } from '@yaw-rx/core'
 import type { LayoutResult, PositionedNode, PositionedEdge, PositionedGroup } from '../services/elk-layout.service.js'
 import type { ClosureResult, GraphKind } from '../services/sandbox.service.js'
-import { combineLatest, tap, type Subscription } from 'rxjs'
+import { ROOT, type RunningMachineSet } from '@yaw-rx/ystate'
+import { combineLatest, tap, take, type Subscription } from 'rxjs'
 
 const EDGE_NAME_FONT = 10
 const EDGE_ON_FONT = 8
@@ -36,6 +37,22 @@ function measureText(svg: SVGSVGElement, text: string, fontSize: number, italic 
             overflow: hidden;
             background: var(--bg-3);
         }
+        /* The current node stays highlighted (.active). When traversed it
+           loses .active and .firing fades it back to its own base over 2s.
+           Edges flash + fade the same way. Colour only - stroke width and
+           the arrow marker are never touched. */
+        .node { transition: stroke 0.2s ease, fill 0.2s ease; }
+        .node.active { stroke: #8af; fill: #1c2740; }
+        .node.firing { animation: nodeFire 1.5s ease-out; }
+        .edge.firing { animation: edgeFire 1.5s ease-out; }
+        @keyframes nodeFire {
+            from { stroke: #8af; fill: #1c2740; }
+            to { stroke: var(--base-stroke, #444); fill: #1a1a1a; }
+        }
+        @keyframes edgeFire {
+            from { stroke: #8af; }
+            to { stroke: var(--base-stroke, #9a9a9a); }
+        }
         div {
             width: 100%;
             height: 100%;
@@ -69,6 +86,9 @@ export class GraphCanvas extends RxElement {
     @state closureResults: Record<string, ClosureResult> = {}
     @state graphKinds: Record<string, GraphKind> = {}
     @state transitionKeys: Record<string, string[]> = {}
+    // Live machines from running forms - drive node highlight / edge flash
+    // over the static layout, never rebuilding it (see animate()).
+    @state runningMachines: RunningMachineSet[] = []
     @state viewScale = 1
     @state viewTx = 0
     @state viewTy = 0
@@ -87,6 +107,13 @@ export class GraphCanvas extends RxElement {
     private preFullscreenScreenX = 0
     private preFullscreenScreenY = 0
     private subs: Subscription[] = []
+    // Captured per render() so animation can address SVG elements by their
+    // ELK id (`${graphKey}:${localName}`) without rebuilding the diagram.
+    private nodeEls = new Map<string, SVGRectElement>()
+    private edgeEls = new Map<string, SVGPathElement[]>()
+    private animSubs: Subscription[] = []
+    // The currently-active (highlighted) node per ELK graph group.
+    private activeNode = new Map<string, string>()
 
     override onRender(): void {
         this.addEventListener('fullscreenchange', () => this.onFullscreenChange())
@@ -98,6 +125,89 @@ export class GraphCanvas extends RxElement {
                 if (this.contentGroup) this.contentGroup.setAttribute('transform', `translate(${tx},${ty}) scale(${s})`)
             }),
         ).subscribe())
+        // Animation is a second pass over the same SVG, re-armed whenever the
+        // layout is rebuilt or the running machines change. On stop
+        // (runningMachines empties) it clears highlights, reverting to the
+        // static closure-coloured diagram without a rebuild.
+        this.subs.push(combineLatest([this.runningMachines$, this.layout$]).pipe(
+            tap(([machines]) => this.driveAnimation(machines)),
+        ).subscribe())
+    }
+
+    private driveAnimation(machines: RunningMachineSet[]): void {
+        for (const s of this.animSubs) s.unsubscribe()
+        this.animSubs = []
+        this.clearHighlights()
+        this.activeNode.clear()
+
+        for (const machine of machines) {
+            const graphKey = this.correlate(machine)
+            if (!graphKey) continue
+            // Node sequence is driven by EDGE events, not state$: during a
+            // synchronous burst (off->on->power in one tick) the runtime
+            // emits state$ in reverse as the recursive enter()s unwind, so
+            // state$ would skip the middle node. Each edge's `to` is the
+            // true next node, in order. state$ is used once, only for the
+            // entry node.
+            this.animSubs.push(machine.state$.pipe(take(1)).subscribe(s => this.enterNode(graphKey, s.node)))
+            this.animSubs.push(machine.event$.subscribe(e => {
+                this.fire(this.edgeEls.get(`${graphKey}:${e.edge}`))
+                this.enterNode(graphKey, e.to)
+            }))
+        }
+    }
+
+    // The current node stays highlighted (`active`); when the machine moves
+    // on, the node just left flashes and fades over 2s (`firing`). A node
+    // active for only one tick (a burst) still flashes, because leaving it
+    // starts the keyframe regardless of how long `active` was set.
+    private enterNode(graphKey: string, node: string): void {
+        const prev = this.activeNode.get(graphKey)
+        if (prev !== undefined && prev !== node) {
+            const prevEl = this.nodeEls.get(`${graphKey}:${prev}`)
+            if (prevEl) {
+                prevEl.classList.remove('active')
+                this.fire(prevEl)
+            }
+        }
+        const el = this.nodeEls.get(`${graphKey}:${node}`)
+        if (el) {
+            el.classList.remove('firing')
+            el.classList.add('active')
+        }
+        this.activeNode.set(graphKey, node)
+    }
+
+    private clearHighlights(): void {
+        for (const el of this.nodeEls.values()) el.classList.remove('active', 'firing')
+    }
+
+    /** Match a running machine to an ELK group by node-set identity - the same structural trick elk-layout uses to match dep graphs to groups. */
+    private correlate(machine: RunningMachineSet): string | undefined {
+        const rootNodes = Object.keys(machine.source.graphs[ROOT]?.graph.nodes ?? {}).sort().join(',')
+        if (!rootNodes) return undefined
+
+        const groupNodes = new Map<string, string[]>()
+        for (const node of this.layout?.nodes ?? []) {
+            const local = node.id.slice(node.graphKey.length + 1)
+            const list = groupNodes.get(node.graphKey) ?? []
+            list.push(local)
+            groupNodes.set(node.graphKey, list)
+        }
+        for (const [graphKey, names] of groupNodes) {
+            if (names.sort().join(',') === rootNodes) return graphKey
+        }
+        return undefined
+    }
+
+    /** (Re)start the `firing` decay animation on an element (or an edge's path segments) - remove + reflow + add so a repeat fire replays. */
+    private fire(target: SVGElement | SVGElement[] | undefined): void {
+        if (!target) return
+        for (const el of Array.isArray(target) ? target : [target]) {
+            el.classList.remove('firing')
+            void el.getBoundingClientRect()
+            el.classList.add('firing')
+        }
     }
 
     private render(
@@ -111,6 +221,8 @@ export class GraphCanvas extends RxElement {
             this.svg = null
             this.contentGroup = null
         }
+        this.nodeEls.clear()
+        this.edgeEls.clear()
         if (!layout || layout.nodes.length === 0) return
 
         this.contentWidth = layout.width
@@ -375,11 +487,18 @@ export class GraphCanvas extends RxElement {
         }
 
         const rect = this.svgEl('rect')
+        const baseStroke = isMissingNode ? '#c55' : '#444'
         this.setAttrs(rect, {
             x: node.x, y: node.y,
             width: node.width, height: node.height,
-            rx: 4, fill: '#1a1a1a', stroke: isMissingNode ? '#c55' : '#444', 'stroke-width': 1,
+            rx: 4, fill: '#1a1a1a', stroke: baseStroke, 'stroke-width': 1,
         })
+        rect.classList.add('node')
+        // The firing decay animation fades stroke/fill back to this node's
+        // own base (which varies - red for a missing node), carried in a
+        // CSS var so one keyframe works for every node.
+        rect.style.setProperty('--base-stroke', baseStroke)
+        this.nodeEls.set(node.id, rect)
         g.appendChild(rect)
 
         const text = this.svgEl('text')
@@ -419,6 +538,7 @@ export class GraphCanvas extends RxElement {
         const squiggly = kind === 'graph-set' || (keys && !keys.includes(transitionName)) || hasEdgeIssue
         const edgeColor = hasEdgeIssue ? '#c55' : cross ? '#8af' : '#9a9a9a'
 
+        const paths: SVGPathElement[] = []
         for (const section of edge.sections) {
             const points = [section.startPoint, ...(section.bendPoints ?? []), section.endPoint]
             const d = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ')
@@ -430,8 +550,14 @@ export class GraphCanvas extends RxElement {
                 'stroke-width': 1.5,
                 'marker-end': hasEdgeIssue ? 'url(#arrow-error)' : cross ? 'url(#arrow-cross)' : 'url(#arrow)',
             })
+            path.classList.add('edge')
+            // Firing fades the colour back to this edge's base - width and
+            // arrow marker are never touched.
+            path.style.setProperty('--base-stroke', edgeColor)
+            paths.push(path)
             container.appendChild(path)
         }
+        if (edge.edgeName) this.edgeEls.set(edge.id, paths)
 
         if (edge.edgeName) {
             const g = this.svgEl('g')
@@ -497,6 +623,8 @@ export class GraphCanvas extends RxElement {
 
     override onDestroy(): void {
         for (const s of this.subs) s.unsubscribe()
+        for (const s of this.animSubs) s.unsubscribe()
         this.subs = []
+        this.animSubs = []
     }
 }

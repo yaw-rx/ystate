@@ -7,10 +7,13 @@ import type { StateUnion } from './transitions.js';
 /**
  * The lifecycle state of a RunningMachine. Starts as 'running' when
  * created by 'start()'. Transitions to 'complete' when a terminal
- * node is reached [v ∈ F, outdeg(v) = 0], or 'error' when an
- * unhandled error propagates from a transition's '$' observable.
+ * node is reached [v ∈ F, outdeg(v) = 0], 'error' when an
+ * unhandled error propagates from a transition's '$' observable,
+ * or 'stopped' when the owner ends it externally via
+ * `RunningMachineSet.stop()` - the external counterpart to terminal
+ * completion, for graphs with no terminal node [F = ∅].
  */
-export type MachineStatus = 'running' | 'complete' | 'error'
+export type MachineStatus = 'running' | 'complete' | 'error' | 'stopped'
 
 
 /**

@@ -4,6 +4,9 @@ import { WorkspaceEvaluationService } from './app-root/services/workspace-evalua
 import { RuntimeFilesystemService } from './app-root/services/runtime-filesystem.service.js';
 import { SandboxService } from './app-root/services/sandbox.service.js';
 import { TypeAnalysisService } from './app-root/services/type-analysis.service.js';
+import { LiveModulesService } from './app-root/services/live-modules.service.js';
+import { FormAnalysisService } from './app-root/services/form-analysis.service.js';
+import { FormRunService } from './app-root/services/form-run.service.js';
 import { FILESYSTEM_STORAGE } from './app-root/services/filesystem-storage.js';
 // import { LocalStorageFilesystemStorage } from './app-root/services/filesystem-storage/local-storage.js';
 import { NullFilesystemStorage } from './app-root/services/filesystem-storage/null-storage.js';
@@ -28,10 +31,6 @@ it should be
 <bottom closure terminal output>
  maybe like this or perhaps will we need other terminal diagnositics for the form probably yes.
 
-
- im not sure the rendered form even needs to be a yaw component ?? we can just inject it as raw html
- ... we do need to transpile the ts files and have them referencable within a script tag
-
  ... what about our drag drop functionality we need to be able to drag export from the LHS into any file...
  hmmm things to think about
 
@@ -44,10 +43,13 @@ it should be
     providers: [
         SandboxService,
         TypeAnalysisService,
+        FormAnalysisService,
         WorkspaceEvaluationService,
+        LiveModulesService,
         // { provide: FILESYSTEM_STORAGE, useClass: LocalStorageFilesystemStorage },
         { provide: FILESYSTEM_STORAGE, useClass: NullFilesystemStorage },
         RuntimeFilesystemService,
+        FormRunService,
     ],
     template: `
         <side-bar></side-bar>

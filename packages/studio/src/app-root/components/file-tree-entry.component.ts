@@ -3,7 +3,7 @@ import { RxFor } from '@yaw-rx/core/directives/rx-for'
 import { RxIf } from '@yaw-rx/core/directives/rx-if'
 import { type Observable, type Subscription, combineLatest, map, switchMap, first, tap } from 'rxjs'
 import type { RuntimeFile } from '../types/runtime-filesystem.types.js'
-import type { FileAnalysis, ExportRecord } from '../types/serialized-filesystem.types.js'
+import type { FormAnalysis, AnyAnalysis, ExportRecord, FormAttachmentKind } from '../types/serialized-filesystem.types.js'
 import type { StaticBrand } from '../services/type-analysis.service.js'
 import type { StatusIconKind } from './status-icon.component.js'
 import { fileStatusIconKind$ } from '../utils/file-status.js'
@@ -12,7 +12,12 @@ import entryStyles from './file-tree-entry.css'
 
 const cssVar = (name: string): string => `var(--${name})`
 
-const BRAND_VAR_NAME: Record<StaticBrand, string> = {
+// The tree's own brand vocabulary: the ts export brands plus two form-only
+// brands - `running-machine` (an init() output) and `init` (the factory) -
+// each with its own colour and icon, never borrowing another's.
+type RowBrand = StaticBrand | 'running-machine' | 'init'
+
+const BRAND_VAR_NAME: Record<RowBrand, string> = {
     'graph-set': 'brand-graph-set',
     machine: 'brand-machine',
     observable: 'brand-observable',
@@ -21,12 +26,14 @@ const BRAND_VAR_NAME: Record<StaticBrand, string> = {
     class: 'brand-class',
     const: 'brand-const',
     other: 'brand-other',
+    'running-machine': 'brand-running-machine',
+    init: 'brand-init',
 }
 
 // Display order within a file's export list - every brand gets a distinct
 // rank, no ties: consts first, then functions, then graph-sets, machines
 // strictly last.
-const BRAND_ORDER: Record<StaticBrand, number> = {
+const BRAND_ORDER: Record<RowBrand, number> = {
     const: 0,
     observable: 1,
     'behavior-subject': 2,
@@ -35,6 +42,21 @@ const BRAND_ORDER: Record<StaticBrand, number> = {
     other: 5,
     'graph-set': 6,
     machine: 7,
+    'running-machine': 8,
+    init: 9,
+}
+
+// A regular form attachment's kind mapped to the tree brand it renders as.
+// running-machine is its own brand here (its own colour + icon), never
+// borrowed from `machine`.
+const ATTACHMENT_BRAND: Record<FormAttachmentKind, RowBrand> = {
+    observable: 'observable',
+    'behavior-subject': 'behavior-subject',
+    function: 'function',
+    machine: 'machine',
+    'graph-set': 'graph-set',
+    'plain-value': 'const',
+    'running-machine': 'running-machine',
 }
 
 const TOKEN_VAR_NAME: Record<string, string> = {
@@ -61,7 +83,7 @@ interface DisplayPartView {
 interface ExportRow {
     key: string
     name: string
-    brand: StaticBrand
+    brand: RowBrand
     color: string
     isGraphSet: boolean
     isMachine: boolean
@@ -70,6 +92,11 @@ interface ExportRow {
     isFunction: boolean
     isClass: boolean
     isConst: boolean
+    // Form-only: init (the special export) and its returned running machines
+    // (children, indented beneath init).
+    isInit: boolean
+    isRunningMachine: boolean
+    isChild: boolean
     parts: DisplayPartView[]
     docsText: string
 }
@@ -87,7 +114,7 @@ interface ExportRow {
         <div rx-if="expanded">
             <ul class="exports" rx-for="row of exportRows by key">
                 <li>
-                    <div class="export-row" onpointerenter="enterRow($event, row.key)" onpointerleave="leaveRow">
+                    <div class="export-row" [class.child]="row.isChild" onpointerenter="enterRow($event, row.key)" onpointerleave="leaveRow">
                         <svg class="badge" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" [style.color]="row.color">
                             <g rx-if="row.isGraphSet">
                                 <circle cx="18" cy="5" r="3" />
@@ -135,6 +162,13 @@ interface ExportRow {
                             <g rx-if="row.isConst">
                                 <path d="M12 2v20" />
                                 <circle cx="12" cy="12" r="7" />
+                            </g>
+                            <g rx-if="row.isInit">
+                                <path d="M13 2 3 14h9l-1 8 10-12h-9z" />
+                            </g>
+                            <g rx-if="row.isRunningMachine">
+                                <circle cx="12" cy="12" r="10" />
+                                <polygon points="10 8 16 12 10 16" />
                             </g>
                         </svg>
                         <span class="export-name">{{row.name}}</span>
@@ -227,9 +261,9 @@ export class FileTreeEntry extends RxElement {
         return this.file$.pipe(switchMap(f => f.machine.state$))
     }
 
-    private get analysis$(): Observable<FileAnalysis | undefined> {
+    private get analysis$(): Observable<AnyAnalysis | undefined> {
         return this.state$.pipe(map(s => {
-            const data = s.data as { analysis?: FileAnalysis; stale?: FileAnalysis }
+            const data = s.data as { analysis?: AnyAnalysis; stale?: AnyAnalysis }
             return data.analysis ?? data.stale
         }))
     }
@@ -244,14 +278,24 @@ export class FileTreeEntry extends RxElement {
     }
 
     get hasExports$(): Observable<boolean> {
-        return this.analysis$.pipe(map(a => (a?.exports.length ?? 0) > 0))
+        return this.analysis$.pipe(map(a => {
+            if (!a) return false
+            if ('exports' in a) return a.exports.length > 0
+            return a.attachments.length > 0 || a.hasInit
+        }))
     }
 
     get exportRows$(): Observable<ExportRow[]> {
         return combineLatest([this.file$, this.analysis$]).pipe(
-            map(([f, analysis]) => (analysis?.exports ?? [])
-                .map(r => this.toRow(f.name, r))
-                .sort((a, b) => BRAND_ORDER[a.brand] - BRAND_ORDER[b.brand])),
+            map(([f, analysis]) => {
+                if (!analysis) return []
+                // A form keeps its authored order (init + machines last); a ts
+                // file sorts its exports by brand.
+                if (!('exports' in analysis)) return this.formRows(f.name, analysis)
+                return analysis.exports
+                    .map(r => this.toRow(f.name, r))
+                    .sort((a, b) => BRAND_ORDER[a.brand] - BRAND_ORDER[b.brand])
+            }),
         )
     }
 
@@ -328,8 +372,49 @@ export class FileTreeEntry extends RxElement {
             isFunction: brand === 'function',
             isClass: brand === 'class',
             isConst: brand === 'const' || brand === 'other',
+            isInit: false,
+            isRunningMachine: false,
+            isChild: false,
             parts: this.trimmedParts(record.static.displayParts),
             docsText: record.static.documentation.map(p => p.text).join(''),
+        }
+    }
+
+    // --- Form rows: attachments (brand icons) + init (special) with its
+    // returned running machines as indented children. Forms carry no
+    // displayParts, so these rows have no tooltip signature.
+
+    private formRows(fileName: string, analysis: FormAnalysis): ExportRow[] {
+        const rows: ExportRow[] = analysis.attachments.map(a => this.formRow(fileName, a.name, ATTACHMENT_BRAND[a.kind]))
+        if (analysis.hasInit) {
+            rows.push(this.formRow(fileName, 'init', 'init', { isInit: true }))
+            for (const m of analysis.machines) {
+                rows.push(this.formRow(fileName, m, 'running-machine', { isRunningMachine: true, isChild: true }))
+            }
+        }
+        return rows
+    }
+
+    private formRow(fileName: string, name: string, brand: RowBrand, special?: { isInit?: boolean; isRunningMachine?: boolean; isChild?: boolean }): ExportRow {
+        const isInit = special?.isInit ?? false
+        const isRunningMachine = special?.isRunningMachine ?? false
+        return {
+            key: `${this.workspaceName}/${fileName}:${name}${special?.isChild ? ':child' : ''}`,
+            name,
+            brand,
+            color: cssVar(BRAND_VAR_NAME[brand]),
+            isGraphSet: brand === 'graph-set',
+            isMachine: brand === 'machine',
+            isObservable: brand === 'observable',
+            isBehaviorSubject: brand === 'behavior-subject',
+            isFunction: brand === 'function',
+            isClass: false,
+            isConst: !isInit && !isRunningMachine && (brand === 'const' || brand === 'other'),
+            isInit,
+            isRunningMachine,
+            isChild: special?.isChild ?? false,
+            parts: [],
+            docsText: '',
         }
     }
 }

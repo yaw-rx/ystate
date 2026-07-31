@@ -134,7 +134,7 @@ YState uses a **data-on-node** model to realise this 5-tuple: each node v ∈ V 
 
 **MachineSet.** The collection of all Machines (the root supergraph plus any disjoint machines, each independently closed) forms the MachineSet. The supergraph G' lives at the root namespace with kind `'unioned'`. Disjoint machines live at their namespace key with kind `'disjoint'`. Every constituent graph satisfies E ⊆ V × V and δ is closed over E. If either closure fails, the whole set fails.
 
-**RunningMachineSet.** Calling `.start()` on a MachineSet begins traversal, producing a RunningMachineSet. q₀ is the entry node; initial data can be supplied for any node in V'. Disjoint machines must already be running and are passed in so `$` factories can observe them. The runtime provides `state$` (emits `{ node, data }` on each state change) and `event$` (emits `{ edge, from, to }` on each edge firing) over G' and each independent machine. Each RunningMachine carries a `status$` observable over `MachineStatus`: `'running'`, `'complete'`, or `'error'`.
+**RunningMachineSet.** Calling `.start()` on a MachineSet begins traversal, producing a RunningMachineSet. q₀ is the entry node; initial data can be supplied for any node in V'. Disjoint machines must already be running and are passed in so `$` factories can observe them. The runtime provides `state$` (emits `{ node, data }` on each state change) and `event$` (emits `{ edge, from, to }` on each edge firing) over G' and each independent machine. Each RunningMachine carries a `status$` observable over `MachineStatus`: `'running'`, `'complete'`, `'error'`, or `'stopped'`. The owner that called `.start()` can end the set externally with `.stop()` - the only way to end a machine whose graph has no terminal node [F = ∅].
 
 
 Each stage of construction makes the formal components explicit:
@@ -371,7 +371,7 @@ for (const issue of issues.filter(isMissingHandler)) {
 
 ### Observing state
 
-`state$` emits `{ node, data }` on each state change. `event$` emits `{ edge, from, to }` on each edge firing. `status$` emits the machine's lifecycle state: `'running'`, `'complete'`, or `'error'`.
+`state$` emits `{ node, data }` on each state change. `event$` emits `{ edge, from, to }` on each edge firing. `status$` emits the machine's lifecycle state: `'running'`, `'complete'`, `'error'`, or `'stopped'`.
 
 ```typescript
 // .close() validates Auth's graph satisfies E ⊆ V × V -
@@ -402,8 +402,37 @@ auth.event$.subscribe(event =>
   console.log(`${event.edge}: ${event.from} -> ${event.to}`)
 )
 
-// status$ emits the machine's lifecycle state: 'running', 'complete', or 'error'.
+// status$ emits the machine's lifecycle state: 'running', 'complete', 'error', or 'stopped'.
 auth.status$.subscribe(status => console.log(`auth status: ${status}`))
+```
+
+### Stopping
+
+A machine ends itself by reaching a terminal node [v ∈ F, outdeg(v) = 0] - entering it tears down all subscriptions and completes `state$`/`event$`. But a graph with no terminal node [F = ∅] - a thermostat, a session loop - can never end itself. `.stop()` is the external counterpart: the owner that called `.start()` tears the set down from outside.
+
+```typescript
+const heater = Heater.close().start('off')
+
+// .stop() unsubscribes every active transition's $ observable
+// (the machine stops listening to its environment), completes
+// state$ and event$ (including the namespace-filtered views),
+// and status$ reports 'stopped'.
+heater.stop()
+
+// Idempotent: stopping an already-ended machine (terminal,
+// errored, or stopped twice) is a no-op - a 'complete' status
+// never regresses to 'stopped'.
+heater.stop()
+```
+
+Disjoint machines passed into `.start()` are not stopped - they were started by their own owner, and ownership of a machine's lifetime never transfers:
+
+```typescript
+const auth = Auth.close().start('loggedOut')
+const basket = Basket.close().start('empty', { auth })
+
+basket.stop() // basket's traversal ends; auth keeps running
+auth.stop()   // auth's owner ends it separately
 ```
 
 ### Machine sets with multiple machines
@@ -483,10 +512,10 @@ basket.event$.subscribe({
 
 ### Machine lifecycle
 
-`status$` emits the machine's lifecycle state: `'running'`, `'complete'`, or `'error'`.
+`status$` emits the machine's lifecycle state: `'running'`, `'complete'`, `'error'`, or `'stopped'`.
 
 ```typescript
-// status$ emits the machine's lifecycle state: 'running', 'complete', or 'error'.
+// status$ emits the machine's lifecycle state: 'running', 'complete', 'error', or 'stopped'.
 auth.status$.subscribe(status => console.log(`auth status: ${status}`))
 
 // Each running machine has its own status$.

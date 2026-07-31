@@ -1,13 +1,18 @@
 import { Component, Inject, RxElement, state } from '@yaw-rx/core'
 import { Router } from '@yaw-rx/core/router'
 import { type Observable, type Subscription, combineLatest, from, map, tap, filter, distinctUntilChanged, switchMap, of, catchError, EMPTY } from 'rxjs'
+import type { RunningMachineSet } from '@yaw-rx/ystate'
 import { RuntimeFilesystemService } from '../services/runtime-filesystem.service.js'
+import { FormRunService } from '../services/form-run.service.js'
 import type { RuntimeFile } from '../types/runtime-filesystem.types.js'
 import type { FileAnalysis } from '../types/serialized-filesystem.types.js'
-import type { SerializedGraphSet, ClosureResult, GraphKind, SandboxResult } from '../services/sandbox.service.js'
+import type { SerializedGraphSet, ClosureResult, GraphKind } from '../services/sandbox.service.js'
 import { ElkLayoutService, type LayoutResult } from '../services/elk-layout.service.js'
+import { fileKindOf } from '../utils/file-kind.js'
+import { analysisHasErrors } from '../utils/file-status.js'
 import '../components/graph-canvas.component.js'
 import '../components/code-panel.component.js'
+import '../components/form-run-host.component.js'
 
 interface ActiveGraphData {
     graphs: Record<string, SerializedGraphSet>
@@ -37,13 +42,16 @@ interface ActiveGraphData {
             [closureResults]="closureResults"
             [graphKinds]="graphKinds"
             [transitionKeys]="transitionKeys"
+            [runningMachines]="runningMachines"
         ></graph-canvas>
         <div class="divider" onpointerdown="startResize"></div>
-        <code-panel #codePanel class="code-area"
-            [workspaceName]="activeWorkspace"
-            [sandboxResult]="sandboxResult"
-            [style.width]="codePanelWidthStyle"
-        ></code-panel>
+        <div class="rhs" [style.width]="codePanelWidthStyle">
+            <div class="rhs-toolbar">
+                <button class="run-toggle" [class.running]="running" [disabled]="runDisabled" onclick="toggleRun">{{runLabel}}</button>
+            </div>
+            <code-panel class="fill" [style.display]="editorDisplay" [workspaceName]="activeWorkspace"></code-panel>
+            <form-run-host class="fill" [style.display]="runDisplay" [workspaceName]="activeWorkspace" [playing]="running"></form-run-host>
+        </div>
     `,
     styles: `
         :host {
@@ -56,25 +64,53 @@ interface ActiveGraphData {
             min-width: 0;
         }
         .divider {
-            width: 5px;
+            width: 6px;
             cursor: col-resize;
             background: var(--border);
             transition: background 0.1s;
             flex-shrink: 0;
+            touch-action: none;
+            position: relative;
+            z-index: 2;
         }
         .divider:hover, .divider.active {
             background: var(--accent);
         }
-        .code-area {
+        .rhs {
             flex-shrink: 0;
             min-width: 200px;
             max-width: 80%;
+            display: flex;
+            flex-direction: column;
         }
+        .rhs-toolbar {
+            flex-shrink: 0;
+            background: var(--bg-1);
+            border-bottom: var(--border-width) solid var(--border);
+        }
+        /* min-width:0 lets the editor panels shrink with the RHS instead of
+           holding their content's intrinsic width (which overflows on shrink). */
+        .fill { flex: 1; min-height: 0; min-width: 0; }
+        .run-toggle {
+            background: none;
+            border: none;
+            color: var(--success);
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: var(--tracking);
+            padding: 0.5rem 1rem;
+            cursor: pointer;
+        }
+        .run-toggle.running { color: var(--error); }
+        .run-toggle:disabled { color: var(--dim); cursor: not-allowed; }
+        .run-toggle:not(:disabled):hover { background: var(--bg-4); }
     `,
 })
 export class WorkspacePage extends RxElement {
     @Inject(Router) private readonly router!: Router
     @Inject(RuntimeFilesystemService) private readonly filesystem!: RuntimeFilesystemService
+    @Inject(FormRunService) private readonly formRun!: FormRunService
 
     @state layoutResult: LayoutResult | null = null
     @state activeWorkspace = ''
@@ -82,13 +118,64 @@ export class WorkspacePage extends RxElement {
     @state closureResults: Record<string, ClosureResult> = {}
     @state graphKinds: Record<string, GraphKind> = {}
     @state transitionKeys: Record<string, string[]> = {}
-    // output-panel never reads runtimeKinds, only closureResults/graphKinds -
-    // this is a real SandboxResult shape for it, just not a full one.
-    @state sandboxResult: SandboxResult | null = null
+
+    // Play/Stop. `running` swaps only the RHS (editor <-> form host) via
+    // display, mutually exclusive; the ELK canvas is never swapped, only
+    // driven by runningMachines. Each RHS region owns its own terminal.
+    @state running = false
+    @state runningMachines: RunningMachineSet[] = []
     private subs: Subscription[] = []
 
     get codePanelWidthStyle$(): Observable<string> {
         return this.codePanelWidth$.pipe(map((w: number) => `${w}px`))
+    }
+
+    get editorDisplay$(): Observable<string> {
+        return this.running$.pipe(map(r => r ? 'none' : 'flex'))
+    }
+
+    get runDisplay$(): Observable<string> {
+        return this.running$.pipe(map(r => r ? 'flex' : 'none'))
+    }
+
+    get runLabel$(): Observable<string> {
+        return this.running$.pipe(map(r => r ? '■ stop' : '▶ play'))
+    }
+
+    /** Play is enabled only when the workspace has a form and every file is settled with no errors (analysis or closure) - init() would otherwise throw closing a broken machine. Stop is always enabled. */
+    get runDisabled$(): Observable<boolean> {
+        return combineLatest([this.running$, this.canRun$]).pipe(map(([running, canRun]) => running ? false : !canRun))
+    }
+
+    private get canRun$(): Observable<boolean> {
+        return this.activeWorkspaceFiles$.pipe(
+            switchMap(files => {
+                const entries = [...files.values()]
+                const hasForm = entries.some(f => fileKindOf(f.name) === 'form')
+                if (!hasForm) return of(false)
+                return combineLatest(entries.map(f => f.machine.state$.pipe(
+                    map(s => s.node === 'analyzed' && !analysisHasErrors((s.data as { analysis?: FileAnalysis }).analysis)),
+                ))).pipe(map(oks => oks.every(Boolean)))
+            }),
+        )
+    }
+
+    private get activeWorkspaceFiles$(): Observable<ReadonlyMap<string, RuntimeFile>> {
+        return this.activeWorkspace$.pipe(
+            switchMap(name => {
+                if (!name) return of<ReadonlyMap<string, RuntimeFile>>(new Map())
+                return this.filesystem.workspaces$.pipe(
+                    switchMap(workspaces => {
+                        const ws = workspaces.get(name)
+                        return ws ? ws.files$ : of<ReadonlyMap<string, RuntimeFile>>(new Map())
+                    }),
+                )
+            }),
+        )
+    }
+
+    toggleRun(): void {
+        this.running = !this.running
     }
 
     private readonly elkLayout = new ElkLayoutService()
@@ -124,6 +211,12 @@ export class WorkspacePage extends RxElement {
             tap((name: string) => { this.activeWorkspace = name }),
         ).subscribe())
 
+        // The running machines drive the ELK animation. They arrive via the
+        // service (not a DOM event) - see FormRunService.runningMachines$.
+        this.subs.push(this.formRun.runningMachines$.pipe(
+            tap(machines => { this.runningMachines = machines }),
+        ).subscribe())
+
         // Closure results and layout deliberately split: closure data
         // applies on EVERY emission, before and independent of ELK. A graph
         // that can't lay out (an edge referencing a commented-out node
@@ -135,18 +228,12 @@ export class WorkspacePage extends RxElement {
         // them. Only layoutResult waits on ELK; a failed layout keeps the
         // previous one rather than killing the subscription.
         this.subs.push(this.activeGraphData$.pipe(
-            tap(({ graphs, graphKinds, transitionKeys, closureResults, errors }) => {
-                console.log(`[workspace-page] activeGraphData$ emitted: ${Object.keys(graphs).length} graph(s), ${errors.length} evaluation error(s), applying closure results`, { graphs, closureResults, errors })
+            tap(({ graphKinds, transitionKeys, closureResults }) => {
+                // Feeds the ELK canvas only. Per-file closure/error terminals
+                // live in code-panel (edit) and form-run-host (run).
                 this.graphKinds = graphKinds
                 this.transitionKeys = transitionKeys
                 this.closureResults = closureResults
-                // A failed evaluation (a syntax error breaks the whole
-                // pool) surfaces in the terminal as ok:false, same as the
-                // sandbox itself reporting it - not silently swallowed
-                // while stale closure results play innocent underneath.
-                this.sandboxResult = errors.length > 0
-                    ? { ok: false, error: errors.join('\n\n') }
-                    : { ok: true, runtimeKinds: {}, graphs, graphKinds, transitionKeys, closureResults }
             }),
             switchMap(data => from(this.elkLayout.layout(data.graphs)).pipe(
                 catchError(e => {
@@ -173,7 +260,9 @@ export class WorkspacePage extends RxElement {
                 )
             }),
             switchMap(files => {
-                const entries = [...files.values()]
+                // Only ts files feed the ELK diagram - forms produce no
+                // graph-set/machine exports (their analysis is FormAnalysis).
+                const entries = [...files.values()].filter(f => fileKindOf(f.name) === 'ts-file')
                 return entries.length === 0
                     ? of<{ name: string; analysis: FileAnalysis | undefined; error: string | undefined }[]>([])
                     : combineLatest(entries.map(f => f.machine.state$.pipe(

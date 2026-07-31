@@ -4,6 +4,31 @@ import { RxFor } from '@yaw-rx/core/directives/rx-for'
 import { map, tap, type Observable, type Subscription } from 'rxjs'
 import type { SandboxResult, ClosureResult, ClosureIssue, MachineSetValidationIssue } from '../services/sandbox.service.js'
 
+/** One running machine a form's init() produced: its name (the init-map key) and live lifecycle status. */
+export interface RunningMachineInfo {
+    name: string
+    status: string
+}
+
+/**
+ * One form's line in the pool view - display strings pre-built by the
+ * caller (code-panel) so this panel is a dumb renderer. `machines` are the
+ * init() machine names, `attachments` are pre-formatted export lines
+ * ("temperature$ · observable · data (reactive)"), `errors` are diagnostics.
+ * `color` is the form's traffic-light colour (green ok / yellow warn / red
+ * error); `viable` is false only for an error/blocked form (drives the
+ * viable-vs-unviable count in the status bar).
+ */
+export interface FormReport {
+    name: string
+    color: string
+    viable: boolean
+    blocked?: string
+    errors: string[]
+    machines: string[]
+    attachments: string[]
+}
+
 interface OutputEntry {
     key: string
     label: string
@@ -25,8 +50,12 @@ interface DetailEntry {
     selector: 'output-panel',
     directives: [RxIf, RxFor],
     template: `
-        <div class="status-bar" onclick="onToggle">
+        <div class="output-divider" onpointerdown="startResize"></div>
+        <div class="status-bar" onclick="toggle">
             <span class="status">
+                <span rx-if="hasRunning" class="success">▶ {{runningText}}</span>
+                <span rx-if="hasForms" class="success">{{formSummary}}</span>
+                <span rx-if="hasUnviable" class="error"> · {{unviableText}}</span>
                 <span rx-if="hasFailures" class="error">✗ </span>
                 <span rx-if="allOk" class="success">✓ </span>
                 <span class="error">{{failText}}</span>
@@ -37,7 +66,17 @@ interface DetailEntry {
                 <span class="toggle-icon">&#9650;</span>
             </button>
         </div>
-        <div class="details" [style.display]="detailsDisplay">
+        <div class="details" [style.display]="detailsDisplay" [style.height]="detailsHeight">
+            <div rx-for="m of runningMachines by name">
+                <div class="entry running">▶ {{m.name}} — {{m.status}}</div>
+            </div>
+            <div rx-for="form of formReports by name">
+                <div class="entry form-name" [style.color]="form.color">{{form.name}}</div>
+                <div rx-if="form.blocked" class="warning">· blocked: waiting on {{form.blocked}} — fix it on that file's terminal</div>
+                <div rx-for="e of form.errors"><div class="issue">· {{e}}</div></div>
+                <div rx-for="m of form.machines"><div class="entry machine">· ▶ {{m}} (running machine)</div></div>
+                <div rx-for="a of form.attachments"><div class="entry attachment">· {{a}}</div></div>
+            </div>
             <div rx-if="showError" class="issue">{{errorText}}</div>
             <div rx-for="entry of detailEntries by key">
                 <div class="entry" [class.success]="entry.success" [class.failure]="entry.failure">{{entry.icon}} {{entry.label}} {{entry.kind}}</div>
@@ -57,6 +96,17 @@ interface DetailEntry {
             background: var(--bg-1);
             overflow: hidden;
             flex-shrink: 0;
+        }
+        .output-divider {
+            height: 4px;
+            background: var(--bg-1);
+            border-top: 1px solid var(--border);
+            cursor: ns-resize;
+            flex-shrink: 0;
+            user-select: none;
+        }
+        .output-divider:hover {
+            border-top-color: var(--accent);
         }
         .status-bar {
             display: flex;
@@ -108,7 +158,6 @@ interface DetailEntry {
             font-size: 0.75rem;
             line-height: 1.8;
             padding: 4px 12px;
-            flex: 1;
         }
         .entry {
             padding-left: 12px;
@@ -125,11 +174,25 @@ interface DetailEntry {
             padding-left: 12px;
             white-space: pre-wrap;
         }
+        /* Play mode: live machines. Green = a healthy running machine. */
+        .status .success { color: var(--success); }
+        .entry.running { color: var(--success); padding-left: 12px; }
+        /* Form pool: machines a form runs, green; form name coloured by
+           its own traffic-light status via [style.color]. Attachments are
+           neutral info, not a works/broken status, so blue - never a
+           traffic-light colour. */
+        .entry.machine { color: var(--success); padding-left: 12px; }
+        .entry.attachment { color: var(--accent); padding-left: 12px; }
+        .entry.form-name { padding-left: 0; margin-top: 4px; }
     `,
 })
 export class OutputPanel extends RxElement {
     @state sandboxResult: SandboxResult | null = null
+    // Fully self-contained expand + drag-resize: the panel owns its own
+    // size, so a host just places `<output-panel [sandboxResult]>` with no
+    // expansion state, height binding, or event wiring of its own.
     @state expanded = false
+    @state height = 200
     @state hasFailures = false
     @state allOk = false
     @state failText = ''
@@ -139,10 +202,51 @@ export class OutputPanel extends RxElement {
     @state errorText = ''
     @state detailEntries: DetailEntry[] = []
     @state warnings: string[] = []
+    // Run-mode input: the machines a form's init() is actually running.
+    @state runningMachines: RunningMachineInfo[] = []
+    // Form-pool input (edit mode): every form and what it exposes.
+    @state formReports: FormReport[] = []
     private subs: Subscription[] = []
+
+    get hasRunning$(): Observable<boolean> {
+        return this.runningMachines$.pipe(map(m => m.length > 0))
+    }
+
+    get runningText$(): Observable<string> {
+        return this.runningMachines$.pipe(map(m => `${m.length} machine${m.length !== 1 ? 's' : ''} running`))
+    }
+
+    get hasForms$(): Observable<boolean> {
+        return this.formReports$.pipe(map(r => r.length > 0))
+    }
+
+    /** Main bar (green): viable forms + total running machines across the pool. */
+    get formSummary$(): Observable<string> {
+        return this.formReports$.pipe(map(r => {
+            const viable = r.filter(f => f.viable).length
+            const machines = r.reduce((n, f) => n + f.machines.length, 0)
+            return `${viable} viable form${viable !== 1 ? 's' : ''} · ${machines} running machine${machines !== 1 ? 's' : ''}`
+        }))
+    }
+
+    get hasUnviable$(): Observable<boolean> {
+        return this.formReports$.pipe(map(r => r.some(f => !f.viable)))
+    }
+
+    /** Main bar (red): the count of unviable forms - error or blocked. */
+    get unviableText$(): Observable<string> {
+        return this.formReports$.pipe(map(r => {
+            const n = r.filter(f => !f.viable).length
+            return `${n} unviable form${n !== 1 ? 's' : ''}`
+        }))
+    }
 
     get detailsDisplay(): Observable<string> {
         return this.expanded$.pipe(map((exp: boolean) => exp ? '' : 'none'))
+    }
+
+    get detailsHeight(): Observable<string> {
+        return this.height$.pipe(map((h: number) => `${h}px`))
     }
 
     override onInit(): void {
@@ -156,8 +260,33 @@ export class OutputPanel extends RxElement {
         this.subs = []
     }
 
-    onToggle(): void {
-        this.dispatchEvent(new CustomEvent('toggle-output', { bubbles: true, composed: true }))
+    toggle(): void {
+        this.expanded = !this.expanded
+        if (this.expanded && this.height < 200) this.height = 200
+    }
+
+    startResize(e: PointerEvent): void {
+        e.preventDefault()
+        const target = e.currentTarget as HTMLElement
+        target.setPointerCapture(e.pointerId)
+        const wasCollapsed = !this.expanded
+        if (wasCollapsed) {
+            this.expanded = true
+            this.height = 28
+        }
+        const startY = e.clientY
+        const startH = wasCollapsed ? 28 : this.height
+
+        const onMove = (ev: PointerEvent) => {
+            this.height = Math.max(28, startH + (startY - ev.clientY))
+        }
+        const onUp = () => {
+            target.removeEventListener('pointermove', onMove)
+            target.removeEventListener('pointerup', onUp)
+            if (this.height <= 28) this.expanded = false
+        }
+        target.addEventListener('pointermove', onMove)
+        target.addEventListener('pointerup', onUp)
     }
 
     private updateFromResult(result: SandboxResult | null): void {

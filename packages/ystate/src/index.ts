@@ -212,6 +212,11 @@ export function define<
          * full runtime behaviour: subscription, transition resolution,
          * teardown.
          *
+         * Whoever calls `start()` owns the running set's lifetime: it
+         * ends either by reaching a terminal node [v ∈ F] or by the
+         * owner calling `.stop()` on the returned set - the only way
+         * to end a machine whose graph has no terminal node [F = ∅].
+         *
          * @param entry - The starting node in the root machine's V.
          * @param runningMachines - Running instances of disconnected machines.
          * @param initialNodeData - Partial map of nodes to partial data, amending any node in V'.

@@ -1,6 +1,6 @@
 import { combineLatest, switchMap, map, of, type Observable } from 'rxjs'
-import type { DependencyGraph, QualifiedName, RuntimeWorkspace } from '../types/runtime-filesystem.types.js'
-import type { SerializedWorkspace, SerializedWorkspaceFile, SerializedDependencyGraph, WorkspaceManifest, WorkspaceFileNode } from '../types/serialized-filesystem.types.js'
+import type { DependencyGraph, QualifiedName, RuntimeFile, RuntimeWorkspace } from '../types/runtime-filesystem.types.js'
+import type { SerializedWorkspace, SerializedWorkspaceFile, SerializedDependencyGraph, WorkspaceManifest, WorkspaceFileNode, FormSections } from '../types/serialized-filesystem.types.js'
 import { flattenFiles$ } from './flatten-files.js'
 import { hashContent } from './content-hash.js'
 
@@ -17,20 +17,29 @@ function toSerializedStatus(node: string): WorkspaceFileNode {
     return node === 'blocked' ? 'analyzing' : node as WorkspaceFileNode
 }
 
-/** The live serialized projection of one runtime workspace - every file's `content$` and `machine.state$`, recombined on any change. */
+/** A form's two section content streams zipped into a `FormSections`; `of(undefined)` for a plain file so `combineLatest` still emits. */
+function sections$(file: RuntimeFile): Observable<FormSections | undefined> {
+    if (!file.sections) return of(undefined)
+    return combineLatest([file.sections.template.content$, file.sections.styles.content$]).pipe(
+        map(([template, styles]): FormSections => ({ template, styles })),
+    )
+}
+
+/** The live serialized projection of one runtime workspace - every file's `content$`, `machine.state$`, and (for forms) section content, recombined on any change. */
 export function toSerializedWorkspace$(workspace: RuntimeWorkspace, manifest: WorkspaceManifest): Observable<SerializedWorkspace> {
     return workspace.files$.pipe(
         switchMap(files => {
             const entries = [...files.values()]
             return entries.length === 0
                 ? of<SerializedWorkspaceFile[]>([])
-                : combineLatest(entries.map(f => combineLatest([f.content$, f.machine.state$]).pipe(
-                    map(([content, s]): SerializedWorkspaceFile => {
+                : combineLatest(entries.map(f => combineLatest([f.content$, f.machine.state$, sections$(f)]).pipe(
+                    map(([content, s, sections]): SerializedWorkspaceFile => {
                         const data = s.data as { analysis?: unknown; stale?: unknown; error?: string }
                         return {
                             name: f.name,
                             content,
                             status: toSerializedStatus(s.node),
+                            sections,
                             analysis: (data.analysis ?? data.stale) as SerializedWorkspaceFile['analysis'],
                             error: data.error,
                         }

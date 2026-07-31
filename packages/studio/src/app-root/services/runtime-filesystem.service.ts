@@ -1,29 +1,22 @@
 import { Injectable, state } from '@yaw-rx/core'
 import * as monaco from 'monaco-editor'
 import { BehaviorSubject, shareReplay, type Observable } from 'rxjs'
-import type { RuntimeFilesystem, RuntimeWorkspace, RuntimeFile, DependencyGraph } from '../types/runtime-filesystem.types.js'
+import type { RuntimeFilesystem, RuntimeWorkspace, RuntimeFile, RuntimeFormSection, DependencyGraph } from '../types/runtime-filesystem.types.js'
 import type { SerializedWorkspace, SerializedWorkspaceFile, WorkspaceManifest, SerializedDependencyGraph } from '../types/serialized-filesystem.types.js'
 import { WorkspaceEvaluationService } from './workspace-evaluation.service.js'
 import { FilesystemStorage, FILESYSTEM_STORAGE } from './filesystem-storage.js'
 import { createFileMachine } from '../machines/workspace-file.machine.js'
 import { createPersistenceMachine } from '../machines/persistence.machine.js'
 import { modelContent$ } from '../utils/model-content.js'
-import { toModelUri } from '../utils/model-uri.js'
+import { toModelUri, toSectionUri } from '../utils/model-uri.js'
 import { toQualifiedName } from '../utils/qualified-name.js'
+import { fileKindOf } from '../utils/file-kind.js'
 import { deriveDependencyGraph$ } from '../utils/derive-dependency-graph.js'
 import { toSerializedWorkspace$, toSerializedDependencyGraph$ } from '../utils/serialize-runtime.js'
 import { logMachineFailures } from '../utils/log-machine-failures.js'
 import { warmUpMonacoServices } from '../utils/warm-up-monaco.js'
 import { configureTypeScript } from '../utils/configure-typescript.js'
 import { defaultWorkspaces } from '../default-workspaces.js'
-
-// Every file in the ecosystem is a .ts file for now - forms are a real
-// triad of html/css/ts, not a plain .html file, and that composite isn't
-// built yet. There's deliberately no .html branch here: shipping one would
-// claim support that doesn't exist.
-function languageOf(_fileName: string): string {
-    return 'typescript'
-}
 
 /**
  * What each hydrated node needs as its starting data, from the last-known
@@ -192,8 +185,12 @@ export class RuntimeFilesystemService implements RuntimeFilesystem {
     }
 
     private hydrateFile(workspaceName: string, serializedFile: SerializedWorkspaceFile): RuntimeFile {
+        // The script model is always 'typescript' - a form's script is a
+        // .ts file like any other (see file-kind.ts). Only the sibling
+        // template/styles models carry html/css, and those are created
+        // via hydrateSection with the language implied by their URI.
         const uri = toModelUri(workspaceName, serializedFile.name)
-        const model = monaco.editor.getModel(uri) ?? monaco.editor.createModel(serializedFile.content, languageOf(serializedFile.name), uri)
+        const model = monaco.editor.getModel(uri) ?? monaco.editor.createModel(serializedFile.content, 'typescript', uri)
         const content$ = modelContent$(model)
         const { machine, request$, dispose$ } = createFileMachine(this.evaluation, this, workspaceName, serializedFile.name, content$)
         const running = machine.close().start(
@@ -201,6 +198,16 @@ export class RuntimeFilesystemService implements RuntimeFilesystem {
             {},
             initialNodeDataFor(serializedFile) as any,
         )
+
+        // A form carries two more live section models (template/styles)
+        // alongside its script. Present exactly when the file is a form -
+        // the same discriminant the tree and code panel key on.
+        const sections = fileKindOf(serializedFile.name) === 'form'
+            ? {
+                template: this.hydrateSection(workspaceName, serializedFile.name, 'template', serializedFile.sections?.template ?? ''),
+                styles: this.hydrateSection(workspaceName, serializedFile.name, 'styles', serializedFile.sections?.styles ?? ''),
+            }
+            : undefined
 
         // No analysis kick here - hydrateWorkspace collects the kicks and
         // they fire only once the whole filesystem is in the map, so an
@@ -213,15 +220,24 @@ export class RuntimeFilesystemService implements RuntimeFilesystem {
             name: serializedFile.name,
             model,
             content$,
+            sections,
             machine: running,
             request$,
             dispose$,
         }
     }
 
+    private hydrateSection(workspaceName: string, fileName: string, section: 'template' | 'styles', content: string): RuntimeFormSection {
+        const uri = toSectionUri(workspaceName, fileName, section)
+        const model = monaco.editor.getModel(uri) ?? monaco.editor.createModel(content, section === 'template' ? 'html' : 'css', uri)
+        return { model, content$: modelContent$(model) }
+    }
+
     /** Drives the machine into its terminal `removed` node - see the doc comment on `analysisTopology` for why that's real disposal, not a leak. */
     private teardownFile(file: RuntimeFile): void {
         file.dispose$.next()
         file.model.dispose()
+        file.sections?.template.model.dispose()
+        file.sections?.styles.model.dispose()
     }
 }

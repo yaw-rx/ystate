@@ -21,17 +21,22 @@ export const defaultWorkspaces: SerializedWorkspace[] = [
                 name: 'heater.ts',
                 status: 'unanalyzed',
                 content: `import { define } from '@yaw-rx/ystate'
-import { BehaviorSubject, filter } from 'rxjs'
+import { BehaviorSubject, Subject, filter } from 'rxjs'
 
 // Current room temperature (degrees C)
 export const temperature$ = new BehaviorSubject(10)
 
-// External signals to turn the thermostat on and off
-export const turnOnSignal = new BehaviorSubject(false)
-export const turnOffSignal = new BehaviorSubject(false)
+// External signals to turn the thermostat on and off. Plain Subjects, not
+// BehaviorSubjects: a signal is an event, so it must not fire on subscribe.
+// (A BehaviorSubject would emit its seed the instant a node subscribes,
+// firing turnOn/turnOff unconditionally and looping off->on->power->off.)
+export const turnOnSignal = new Subject<void>()
+export const turnOffSignal = new Subject<void>()
 
-export let upperLimitT = 26
-export let lowerLimitT = 23
+// Thermostat thresholds as nextable streams so the running UI can tune
+// them live; the filters below read the current value at emit time.
+export const upperLimitT$ = new BehaviorSubject(26)
+export const lowerLimitT$ = new BehaviorSubject(23)
 
 // The thermostat cycles between power (heating) and idle based on room
 // temperature. It can be turned on from off, and turned off from either
@@ -63,20 +68,93 @@ export const Heater = define({
   },
   // Fires on entry to 'on' if temperature is already at or above the lower limit
   atOrAboveLowerLimit: {
-    $: () => temperature$.pipe(filter(T => T >= lowerLimitT)),
+    $: () => temperature$.pipe(filter(T => T >= lowerLimitT$.value)),
     next: () => ({}),
   },
   // Fires when temperature drops below the lower threshold, triggering heating
   belowLowerLimit: {
-    $: () => temperature$.pipe(filter(T => T < lowerLimitT)),
+    $: () => temperature$.pipe(filter(T => T < lowerLimitT$.value)),
     next: () => ({}),
   },
   // Fires when temperature rises above the upper threshold, stopping heating
   aboveUpperLimit: {
-    $: () => temperature$.pipe(filter(T => T > upperLimitT)),
+    $: () => temperature$.pipe(filter(T => T > upperLimitT$.value)),
     next: () => ({}),
   },
 })`,
+            },
+            {
+                name: 'panel.form',
+                status: 'unanalyzed',
+                sections: {
+                    template: `<div class="panel">
+  <p class="temp">{{temperature}}&deg;C</p>
+  <div class="controls">
+    <button onclick="turnOnSignal.next()">heater on</button>
+    <button onclick="turnOffSignal.next()">heater off</button>
+  </div>
+  <div class="limits">
+    <span>lower {{lower}}&deg;</span>
+    <button onclick="lowerLimit(-1)">-</button>
+    <button onclick="lowerLimit(1)">+</button>
+    <span>upper {{upper}}&deg;</span>
+    <button onclick="upperLimit(-1)">-</button>
+    <button onclick="upperLimit(1)">+</button>
+  </div>
+  <rx-graph [config]="graphConfig" [series]="graphSeries"></rx-graph>
+</div>`,
+                    styles: `.panel { display: flex; flex-direction: column; gap: 1rem; padding: 1.5rem; font-family: var(--font-mono); color: var(--text); }
+.temp { margin: 0; font-size: 2rem; color: var(--accent); }
+.controls, .limits { display: flex; gap: 0.5rem; align-items: center; font-size: 0.8rem; }
+button { background: var(--bg-4); border: 1px solid var(--border); color: var(--text); font-family: var(--font-mono); padding: 0.3rem 0.7rem; border-radius: var(--radius-sm); cursor: pointer; }
+button:hover { border-color: var(--accent); color: var(--accent); }`,
+                },
+                content: `import { timer, combineLatest, scan, map, mergeMap, take, takeUntil, filter } from 'rxjs'
+import { Heater, temperature$, turnOnSignal, turnOffSignal, upperLimitT$, lowerLimitT$ } from './heater.js'
+
+// Re-export the streams the template reads directly: {{temperature}} and
+// (via the $-suffixed aliases) {{lower}}/{{upper}}. The buttons push the
+// signals and nudge the limits.
+export { temperature$, turnOnSignal, turnOffSignal }
+export const lower$ = lowerLimitT$
+export const upper$ = upperLimitT$
+
+// Nudging a limit is arithmetic on its current value - script logic, since
+// the template's event args are literals/refs, not expressions.
+export const lowerLimit = (d: number) => lowerLimitT$.next(lowerLimitT$.value + d)
+export const upperLimit = (d: number) => upperLimitT$.next(upperLimitT$.value + d)
+
+// The graph wants a stream of arrays; scan the scalar temperature into a
+// rolling window.
+export const graphConfig = { temperature: { label: 'temperature', color: '#88aaff' } }
+export const graphSeries = {
+  temperature: temperature$.pipe(scan((window, t) => [...window, t].slice(-60), [] as number[])),
+}
+
+// The thermal model. m*C = thermal mass, k = wall conductance; each tick
+// applies dT = (q_heater - k*(roomT - environmentT)) / mC. The heater only
+// outputs power in its 'power' node - so the machine's state drives the
+// physics, and the resulting temperature crosses thresholds that drive the
+// machine: a coupled loop through shared streams, neither side owning it.
+const environmentT = 10, wallConductance = 5000, mC = 60 * 1005, heaterPower = 100000
+
+// init() starts (and closes) the machine and returns it by name; the form's
+// onDestroy calls .stop() on each. The physics loop rides the same
+// lifetime: takeUntil the heater reports 'stopped', so Stop tears it down
+// with no leak.
+export const init = () => {
+  const heater = Heater.close().start('off')
+  timer(0, 1000).pipe(
+    mergeMap(() => combineLatest([temperature$, heater.state$]).pipe(take(1))),
+    map(([roomT, s]) => {
+      const heatLoss = wallConductance * (roomT - environmentT)
+      const heaterOutput = s.node === 'power' ? heaterPower : 0
+      return roomT + (heaterOutput - heatLoss) / mC
+    }),
+    takeUntil(heater.status$.pipe(filter(x => x === 'stopped'))),
+  ).subscribe(t => temperature$.next(Math.round(t * 10) / 10))
+  return { heater }
+}`,
             },
         ],
     },

@@ -1,19 +1,12 @@
-import ts from 'typescript'
-import * as ystate from '@yaw-rx/ystate'
-import * as rxjs from 'rxjs'
 import type { IncidenceGraphSet, IncidenceGraphSetMixin, IncidenceMachineMixin, EdgeDef, NodeData, TransitionDef, DepNodeRef } from '@yaw-rx/ystate'
 import { IncidenceGraphSetClosureError, IncidenceMachineClosureError } from '@yaw-rx/ystate'
 import type { SandboxCommand, SandboxResponse, SerializedEdge, SerializedGraphSet, GraphKind, ClosureResult, WorkspaceFile, RuntimeKind } from '../services/sandbox.service.js'
 import type { QualifiedName } from '../types/runtime-filesystem.types.js'
-import { parseImports, resolveImportSpecifier, buildExecutionOrder } from '../utils/import-graph.js'
+import { parseImports, buildExecutionOrder } from '../utils/import-graph.js'
+import { BUILTIN_MODULES, transpile, rewriteRequires, executeModule } from '../utils/execute-module.js'
 import { isObservable } from '../guards/is-observable.js'
 import { isIncidenceGraphSetMixin } from '../guards/is-incidence-graph-set-mixin.js'
 import { isIncidenceMachineMixin } from '../guards/is-incidence-machine-mixin.js'
-
-const BUILTIN_MODULES: Record<string, unknown> = {
-    '@yaw-rx/ystate': ystate,
-    'rxjs': rxjs,
-}
 
 // --- Per-file execution cache ---
 
@@ -40,84 +33,6 @@ type LiveGraphValue =
     | IncidenceGraphSetMixin<Record<string, NodeData>, Record<string, EdgeDef>, Record<string, IncidenceGraphSet<Record<string, NodeData>, Record<string, EdgeDef>>>>
     | IncidenceMachineMixin<Record<string, NodeData>, Record<string, EdgeDef>, Record<string, TransitionDef>>
 const liveExports = new Map<string, LiveGraphValue>()
-
-// --- Transpile / module helpers ---
-
-function transpile(fileName: string, source: string): string {
-    const result = ts.transpileModule(source, {
-        compilerOptions: {
-            target: ts.ScriptTarget.ES2022,
-            module: ts.ModuleKind.CommonJS,
-        },
-        fileName,
-    })
-    return result.outputText
-}
-
-function rewriteRequires(
-    js: string,
-    fromName: QualifiedName,
-    available: ReadonlySet<QualifiedName>,
-): string {
-    const sourceFile = ts.createSourceFile(
-        'rewrite.js',
-        js,
-        ts.ScriptTarget.ES2022,
-        true,
-        ts.ScriptKind.JS,
-    )
-
-    const replacements: { start: number; end: number; text: string }[] = []
-
-    ts.forEachChild(sourceFile, node => {
-        if (!ts.isVariableStatement(node)) return
-        for (const decl of node.declarationList.declarations) {
-            if (
-                decl.initializer &&
-                ts.isCallExpression(decl.initializer) &&
-                ts.isIdentifier(decl.initializer.expression) &&
-                decl.initializer.expression.text === 'require' &&
-                decl.initializer.arguments.length === 1 &&
-                ts.isStringLiteral(decl.initializer.arguments[0])
-            ) {
-                const specifier = decl.initializer.arguments[0].text
-
-                const moduleName = BUILTIN_MODULES[specifier]
-                    ? specifier
-                    : resolveImportSpecifier(fromName, specifier, available)
-
-                if (moduleName !== undefined) {
-                    replacements.push({
-                        start: decl.initializer.getStart(sourceFile),
-                        end: decl.initializer.getEnd(),
-                        text: `__modules[${JSON.stringify(moduleName)}]`,
-                    })
-                }
-            }
-        }
-    })
-
-    let result = js
-    for (const r of replacements.reverse()) {
-        result = result.slice(0, r.start) + r.text + result.slice(r.end)
-    }
-    return result
-}
-
-function executeModule(
-    js: string,
-    modules: Record<string, unknown>,
-): Record<string, unknown> {
-    const moduleObj = { exports: {} as Record<string, unknown> }
-    const require = (specifier: string) => {
-        const resolved = modules[specifier]
-        if (resolved !== undefined) return resolved
-        throw new Error(`Module '${specifier}' not found`)
-    }
-    const fn = new Function('exports', 'module', '__modules', 'require', js)
-    fn(moduleObj.exports, moduleObj, modules, require)
-    return moduleObj.exports
-}
 
 // --- Serialization ---
 

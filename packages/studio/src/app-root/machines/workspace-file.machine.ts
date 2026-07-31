@@ -1,6 +1,6 @@
 import { define } from '@yaw-rx/ystate'
 import { Subject, merge, switchMap, map, filter, skip, from, of, EMPTY, observeOn, queueScheduler, type Observable } from 'rxjs'
-import type { FileAnalysis } from '../types/serialized-filesystem.types.js'
+import type { AnyAnalysis } from '../types/serialized-filesystem.types.js'
 import type { RuntimeFilesystem, RuntimeWorkspace, RuntimeFile, QualifiedName } from '../types/runtime-filesystem.types.js'
 import type { WorkspaceEvaluationService } from '../services/workspace-evaluation.service.js'
 import { splitQualifiedName, toQualifiedName } from '../utils/qualified-name.js'
@@ -39,10 +39,10 @@ export type WorkspaceFileNode = 'unanalyzed' | 'blocked' | 'analyzing' | 'analyz
 const analysisTopology = define({
     nodes: {
         unanalyzed: {},
-        blocked: { waitingOn: [] as QualifiedName[], stale: undefined as FileAnalysis | undefined },
-        analyzing: { stale: undefined as FileAnalysis | undefined },
-        analyzed: { analysis: { diagnostics: [], exports: [] } as FileAnalysis },
-        failed: { error: '', stale: undefined as FileAnalysis | undefined },
+        blocked: { waitingOn: [] as QualifiedName[], stale: undefined as AnyAnalysis | undefined },
+        analyzing: { stale: undefined as AnyAnalysis | undefined },
+        analyzed: { analysis: { diagnostics: [], exports: [] } as AnyAnalysis },
+        failed: { error: '', stale: undefined as AnyAnalysis | undefined },
         removed: {},
     },
     edges: {
