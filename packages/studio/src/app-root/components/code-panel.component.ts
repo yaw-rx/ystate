@@ -140,22 +140,18 @@ export class CodePanel extends RxElement {
     }
 
     /**
-     * One file's analysis as a SandboxResult the terminal renders. A failed
-     * evaluation or a compiler error (a form's type mistake, a broken
-     * import) shows as `ok: false` with the messages - that's what "form
-     * issues" are for a form, whose script has no machines to close.
-     * Otherwise the machine/graph-set closures are shown.
+     * A ts file's analysis as a SandboxResult the terminal renders. The ONLY
+     * error here is a runtime evaluation failure (the `failed` node - the
+     * sandbox threw, e.g. a reference error). Compile-time diagnostics are a
+     * separate concern (Monaco's own red squiggles) and must NEVER block the
+     * closure results: a type error must not hide the machine/graph closure
+     * report. Otherwise the closures are shown as-is.
      */
     private terminalFor(file: RuntimeFile, s: { node: string; data: unknown }): SandboxResult {
         const data = s.data as { analysis?: FileAnalysis; stale?: FileAnalysis; error?: string }
-        if (s.node === 'failed') return { ok: false, error: data.error ?? 'analysis failed' }
+        if (s.node === 'failed') return { ok: false, error: data.error ?? 'evaluation failed' }
 
         const analysis = data.analysis ?? data.stale
-        const diagnosticErrors = (analysis?.diagnostics ?? []).filter(d => d.category === 'error')
-        if (diagnosticErrors.length > 0) {
-            return { ok: false, error: diagnosticErrors.map(d => `${file.name}:${d.line}:${d.column} - ${d.message}`).join('\n') }
-        }
-
         const closureResults: Record<string, ClosureResult> = {}
         const graphKinds: Record<string, GraphKind> = {}
         for (const record of analysis?.exports ?? []) {
