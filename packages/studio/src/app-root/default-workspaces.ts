@@ -193,6 +193,363 @@ export const init = () => {
     ],
   },
   {
+    "name": "traffic",
+    "manifest": {
+      "name": "traffic",
+      "concepts": [],
+      "metadata": {}
+    },
+    "files": [
+      {
+        "name": "traffic-light.ts",
+        "content": `import { define } from '@yaw-rx/ystate'
+import { BehaviorSubject, Subject, timer, filter, mergeMap, of, delay, NEVER, take } from 'rxjs'
+
+// ---------------------------------------------------------------------------
+// External signals
+// ---------------------------------------------------------------------------
+export const pedestrianRequest = new Subject<void>()
+export const emergencySignal   = new Subject<void>()
+export const resumeNormal      = new Subject<void>()
+
+// ---------------------------------------------------------------------------
+// Shared mutable state (read by timer guards inside the machine)
+// ---------------------------------------------------------------------------
+export const pedestrianQueued$ = new BehaviorSubject(false)
+export const nextDirection$    = new BehaviorSubject<'ns' | 'ew'>('ns')
+
+// Idempotent queue: rapid presses don't stack.
+pedestrianRequest.subscribe(() => {
+  if (!pedestrianQueued$.value) pedestrianQueued$.next(true)
+})
+
+// ---------------------------------------------------------------------------
+// Machine definition
+// ---------------------------------------------------------------------------
+export const TrafficLight = define({
+  nodes: {
+    allRed: {},
+    nsGreen: {},
+    nsYellow: {},
+    ewGreen: {},
+    ewYellow: {},
+    pedestrianWalk: {},
+    pedestrianClear: {},
+    emergencyFlash: {},
+  },
+  edges: {
+    // --- Normal vehicle cycle ----------------------------------------------
+    nsGo:       { from: 'allRed',   to: 'nsGreen',  on: 'nsCycleTimer.next' },
+    nsCaution:  { from: 'nsGreen',  to: 'nsYellow', on: 'nsTimer.next' },
+    nsStop:     { from: 'nsYellow', to: 'allRed',   on: 'nsYellowTimer.next' },
+
+    ewGo:       { from: 'allRed',   to: 'ewGreen',  on: 'ewCycleTimer.next' },
+    ewCaution:  { from: 'ewGreen',  to: 'ewYellow', on: 'ewTimer.next' },
+    ewStop:     { from: 'ewYellow', to: 'allRed',   on: 'ewYellowTimer.next' },
+
+    // --- Pedestrian phase (wins the race at all-red when queued) -----------
+    pedStart:    { from: 'allRed', to: 'pedestrianWalk',  on: 'pedestrianTimer.next' },
+    pedWalkDone: { from: 'pedestrianWalk',  to: 'pedestrianClear', on: 'walkTimer.next' },
+    pedClearDone:{ from: 'pedestrianClear', to: 'allRed',          on: 'clearTimer.next' },
+
+    // --- Emergency overrides from every normal state -----------------------
+    emergencyAllRed:   { from: 'allRed',          to: 'emergencyFlash', on: 'emergency.next' },
+    emergencyNsGreen:  { from: 'nsGreen',         to: 'emergencyFlash', on: 'emergency.next' },
+    emergencyNsYellow: { from: 'nsYellow',        to: 'emergencyFlash', on: 'emergency.next' },
+    emergencyEwGreen:  { from: 'ewGreen',         to: 'emergencyFlash', on: 'emergency.next' },
+    emergencyEwYellow: { from: 'ewYellow',        to: 'emergencyFlash', on: 'emergency.next' },
+    emergencyPedWalk:  { from: 'pedestrianWalk',  to: 'emergencyFlash', on: 'emergency.next' },
+    emergencyPedClear: { from: 'pedestrianClear', to: 'emergencyFlash', on: 'emergency.next' },
+    resume:            { from: 'emergencyFlash',  to: 'allRed',         on: 'resume.next' },
+  },
+}).implement({
+  // Only fires when nextDirection === 'ns' and no pedestrian is waiting.
+  nsCycleTimer: {
+    $: () => timer(1000).pipe(
+      mergeMap(() => (nextDirection$.value === 'ns' && !pedestrianQueued$.value) ? of({}) : NEVER),
+      take(1),
+    ),
+    next: () => ({}),
+  },
+  nsTimer: {
+    $: () => timer(4000),
+    next: () => ({}),
+  },
+  nsYellowTimer: {
+    $: () => timer(2000),
+    next: () => {
+      nextDirection$.next('ew')
+      return {}
+    },
+  },
+
+  // Only fires when nextDirection === 'ew' and no pedestrian is waiting.
+  ewCycleTimer: {
+    $: () => timer(1000).pipe(
+      mergeMap(() => (nextDirection$.value === 'ew' && !pedestrianQueued$.value) ? of({}) : NEVER),
+      take(1),
+    ),
+    next: () => ({}),
+  },
+  ewTimer: {
+    $: () => timer(4000),
+    next: () => ({}),
+  },
+  ewYellowTimer: {
+    $: () => timer(2000),
+    next: () => {
+      nextDirection$.next('ns')
+      return {}
+    },
+  },
+
+  // Fires 400 ms after a pedestrian is queued while in all-red, beating the
+  // 1000 ms vehicle cycle timers. If the request arrives too late in the
+  // all-red window, it rides over to the next cycle.
+  pedestrianTimer: {
+    $: () => pedestrianQueued$.pipe(filter(v => v), delay(400), take(1)),
+    next: () => {
+      pedestrianQueued$.next(false)
+      return {}
+    },
+  },
+  walkTimer: {
+    $: () => timer(8000),
+    next: () => ({}),
+  },
+  clearTimer: {
+    $: () => timer(2000),
+    next: () => ({}),
+  },
+
+  emergency: {
+    $: () => emergencySignal,
+    next: () => ({}),
+  },
+  resume: {
+    $: () => resumeNormal,
+    next: () => ({}),
+  },
+})`,
+        "status": "unanalyzed"
+      },
+      {
+        "name": "traffic-light.form",
+        "content": `import { TrafficLight, pedestrianRequest, emergencySignal, resumeNormal, pedestrianQueued$ } from './traffic-light.js'
+import { map } from 'rxjs'
+
+export { pedestrianRequest, emergencySignal, resumeNormal }
+
+const light = TrafficLight.close().start('allRed')
+export { light }
+
+const state$ = light.state$
+
+export const stateName$ = state$.pipe(map(s => s.node))
+
+// NS lights: red during allRed, ewGreen, ewYellow, pedestrian phases, emergency
+export const nsRedOn$    = state$.pipe(map(s => ['allRed','ewGreen','ewYellow','pedestrianWalk','pedestrianClear','emergencyFlash'].includes(s.node)))
+export const nsYellowOn$ = state$.pipe(map(s => s.node === 'nsYellow'))
+export const nsGreenOn$  = state$.pipe(map(s => s.node === 'nsGreen'))
+
+// EW lights: red during allRed, nsGreen, nsYellow, pedestrian phases, emergency
+export const ewRedOn$    = state$.pipe(map(s => ['allRed','nsGreen','nsYellow','pedestrianWalk','pedestrianClear','emergencyFlash'].includes(s.node)))
+export const ewYellowOn$ = state$.pipe(map(s => s.node === 'ewYellow'))
+export const ewGreenOn$  = state$.pipe(map(s => s.node === 'ewGreen'))
+
+export const walkOn$     = state$.pipe(map(s => s.node === 'pedestrianWalk'))
+export const dontWalkOn$ = state$.pipe(map(s => s.node !== 'pedestrianWalk'))
+
+export const pedQueued$  = pedestrianQueued$
+export const emergencyOn$ = state$.pipe(map(s => s.node === 'emergencyFlash'))
+
+export const init = () => ({ light })`,
+        "status": "unanalyzed",
+        "sections": {
+          "template": `<div class="intersection">
+  <svg viewBox="140 140 320 320" class="diagram">
+    <defs>
+      <filter id="glow-red"><feGaussianBlur stdDeviation="2.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+      <filter id="glow-yellow"><feGaussianBlur stdDeviation="2.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+      <filter id="glow-green"><feGaussianBlur stdDeviation="2.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    </defs>
+
+    <!-- Background -->
+    <rect width="600" height="600" fill="#0a0a0a"/>
+
+    <!-- Roads (80px wide, centred on 300) -->
+    <rect x="0" y="260" width="600" height="80" fill="#252525"/>
+    <rect x="260" y="0" width="80" height="600" fill="#252525"/>
+    <rect x="260" y="260" width="80" height="80" fill="#333"/>
+
+    <!-- Centre lane markings -->
+    <line x1="0" y1="300" x2="600" y2="300" stroke="#555" stroke-width="2" stroke-dasharray="14 14"/>
+    <line x1="300" y1="0" x2="300" y2="600" stroke="#555" stroke-width="2" stroke-dasharray="14 14"/>
+
+    <!-- Crosswalks: dotted border + white stripes -->
+    <!-- North -->
+    <rect x="260" y="240" width="80" height="20" fill="none" stroke="#fff" stroke-width="1.5" stroke-dasharray="3 3"/>
+    <line x1="270" y1="240" x2="270" y2="260" stroke="#fff" stroke-width="3" opacity="0.9"/>
+    <line x1="283" y1="240" x2="283" y2="260" stroke="#fff" stroke-width="3" opacity="0.9"/>
+    <line x1="296" y1="240" x2="296" y2="260" stroke="#fff" stroke-width="3" opacity="0.9"/>
+    <line x1="309" y1="240" x2="309" y2="260" stroke="#fff" stroke-width="3" opacity="0.9"/>
+    <line x1="322" y1="240" x2="322" y2="260" stroke="#fff" stroke-width="3" opacity="0.9"/>
+    <line x1="335" y1="240" x2="335" y2="260" stroke="#fff" stroke-width="3" opacity="0.9"/>
+
+    <!-- South -->
+    <rect x="260" y="340" width="80" height="20" fill="none" stroke="#fff" stroke-width="1.5" stroke-dasharray="3 3"/>
+    <line x1="270" y1="340" x2="270" y2="360" stroke="#fff" stroke-width="3" opacity="0.9"/>
+    <line x1="283" y1="340" x2="283" y2="360" stroke="#fff" stroke-width="3" opacity="0.9"/>
+    <line x1="296" y1="340" x2="296" y2="360" stroke="#fff" stroke-width="3" opacity="0.9"/>
+    <line x1="309" y1="340" x2="309" y2="360" stroke="#fff" stroke-width="3" opacity="0.9"/>
+    <line x1="322" y1="340" x2="322" y2="360" stroke="#fff" stroke-width="3" opacity="0.9"/>
+    <line x1="335" y1="340" x2="335" y2="360" stroke="#fff" stroke-width="3" opacity="0.9"/>
+
+    <!-- West -->
+    <rect x="240" y="260" width="20" height="80" fill="none" stroke="#fff" stroke-width="1.5" stroke-dasharray="3 3"/>
+    <line x1="240" y1="270" x2="260" y2="270" stroke="#fff" stroke-width="3" opacity="0.9"/>
+    <line x1="240" y1="283" x2="260" y2="283" stroke="#fff" stroke-width="3" opacity="0.9"/>
+    <line x1="240" y1="296" x2="260" y2="296" stroke="#fff" stroke-width="3" opacity="0.9"/>
+    <line x1="240" y1="309" x2="260" y2="309" stroke="#fff" stroke-width="3" opacity="0.9"/>
+    <line x1="240" y1="322" x2="260" y2="322" stroke="#fff" stroke-width="3" opacity="0.9"/>
+    <line x1="240" y1="335" x2="260" y2="335" stroke="#fff" stroke-width="3" opacity="0.9"/>
+
+    <!-- East -->
+    <rect x="340" y="260" width="20" height="80" fill="none" stroke="#fff" stroke-width="1.5" stroke-dasharray="3 3"/>
+    <line x1="340" y1="270" x2="360" y2="270" stroke="#fff" stroke-width="3" opacity="0.9"/>
+    <line x1="340" y1="283" x2="360" y2="283" stroke="#fff" stroke-width="3" opacity="0.9"/>
+    <line x1="340" y1="296" x2="360" y2="296" stroke="#fff" stroke-width="3" opacity="0.9"/>
+    <line x1="340" y1="309" x2="360" y2="309" stroke="#fff" stroke-width="3" opacity="0.9"/>
+    <line x1="340" y1="322" x2="360" y2="322" stroke="#fff" stroke-width="3" opacity="0.9"/>
+    <line x1="340" y1="335" x2="360" y2="335" stroke="#fff" stroke-width="3" opacity="0.9"/>
+
+    <!-- North–South traffic light — North approach (facing southbound traffic) -->
+    <!-- centred on x=300, positioned above the north crosswalk -->
+    <g transform="translate(289, 165)">
+      <text x="11" y="-10" text-anchor="middle" fill="#bbb" font-size="10" font-family="var(--font-mono)">North–South</text>
+      <rect x="0" y="0" width="22" height="60" rx="4" fill="#111" stroke="#444" stroke-width="1.5"/>
+      <circle cx="11" cy="14" r="7" fill="#300"/>
+      <g rx-if="nsRedOn"><circle cx="11" cy="14" r="7" fill="#f33" filter="url(#glow-red)"/></g>
+      <circle cx="11" cy="30" r="7" fill="#320"/>
+      <g rx-if="nsYellowOn"><circle cx="11" cy="30" r="7" fill="#fc3" filter="url(#glow-yellow)"/></g>
+      <circle cx="11" cy="46" r="7" fill="#020"/>
+      <g rx-if="nsGreenOn"><circle cx="11" cy="46" r="7" fill="#3f3" filter="url(#glow-green)"/></g>
+    </g>
+
+    <!-- North–South traffic light — South approach (facing northbound traffic) -->
+    <g transform="translate(289, 375)">
+      <text x="11" y="72" text-anchor="middle" fill="#bbb" font-size="10" font-family="var(--font-mono)">North–South</text>
+      <rect x="0" y="0" width="22" height="60" rx="4" fill="#111" stroke="#444" stroke-width="1.5"/>
+      <circle cx="11" cy="14" r="7" fill="#300"/>
+      <g rx-if="nsRedOn"><circle cx="11" cy="14" r="7" fill="#f33" filter="url(#glow-red)"/></g>
+      <circle cx="11" cy="30" r="7" fill="#320"/>
+      <g rx-if="nsYellowOn"><circle cx="11" cy="30" r="7" fill="#fc3" filter="url(#glow-yellow)"/></g>
+      <circle cx="11" cy="46" r="7" fill="#020"/>
+      <g rx-if="nsGreenOn"><circle cx="11" cy="46" r="7" fill="#3f3" filter="url(#glow-green)"/></g>
+    </g>
+
+    <!-- East–West traffic light — West approach (facing eastbound traffic) -->
+    <!-- centred on y=300, positioned left of the west crosswalk -->
+    <g transform="translate(165, 270)">
+      <text x="11" y="-10" text-anchor="middle" fill="#bbb" font-size="10" font-family="var(--font-mono)">East–West</text>
+      <rect x="0" y="0" width="22" height="60" rx="4" fill="#111" stroke="#444" stroke-width="1.5"/>
+      <circle cx="11" cy="14" r="7" fill="#300"/>
+      <g rx-if="ewRedOn"><circle cx="11" cy="14" r="7" fill="#f33" filter="url(#glow-red)"/></g>
+      <circle cx="11" cy="30" r="7" fill="#320"/>
+      <g rx-if="ewYellowOn"><circle cx="11" cy="30" r="7" fill="#fc3" filter="url(#glow-yellow)"/></g>
+      <circle cx="11" cy="46" r="7" fill="#020"/>
+      <g rx-if="ewGreenOn"><circle cx="11" cy="46" r="7" fill="#3f3" filter="url(#glow-green)"/></g>
+    </g>
+
+    <!-- East–West traffic light — East approach (facing westbound traffic) -->
+    <g transform="translate(413, 270)">
+      <text x="11" y="-10" text-anchor="middle" fill="#bbb" font-size="10" font-family="var(--font-mono)">East–West</text>
+      <rect x="0" y="0" width="22" height="60" rx="4" fill="#111" stroke="#444" stroke-width="1.5"/>
+      <circle cx="11" cy="14" r="7" fill="#300"/>
+      <g rx-if="ewRedOn"><circle cx="11" cy="14" r="7" fill="#f33" filter="url(#glow-red)"/></g>
+      <circle cx="11" cy="30" r="7" fill="#320"/>
+      <g rx-if="ewYellowOn"><circle cx="11" cy="30" r="7" fill="#fc3" filter="url(#glow-yellow)"/></g>
+      <circle cx="11" cy="46" r="7" fill="#020"/>
+      <g rx-if="ewGreenOn"><circle cx="11" cy="46" r="7" fill="#3f3" filter="url(#glow-green)"/></g>
+    </g>
+
+    <!-- Pedestrian signals — 4 corners, same width as the crosswalk strips (20px) -->
+    <!-- NW corner -->
+    <g transform="translate(240, 240)">
+      <rect x="0" y="0" width="20" height="20" rx="2" fill="#111" stroke="#444" stroke-width="1"/>
+      <g rx-if="walkOn"><text x="10" y="14" text-anchor="middle" fill="#3f3" font-size="9" font-weight="bold" font-family="var(--font-mono)">W</text></g>
+      <g rx-if="dontWalkOn"><text x="10" y="14" text-anchor="middle" fill="#f33" font-size="11" font-weight="bold" font-family="var(--font-mono)">✕</text></g>
+    </g>
+    <!-- NE corner -->
+    <g transform="translate(340, 240)">
+      <rect x="0" y="0" width="20" height="20" rx="2" fill="#111" stroke="#444" stroke-width="1"/>
+      <g rx-if="walkOn"><text x="10" y="14" text-anchor="middle" fill="#3f3" font-size="9" font-weight="bold" font-family="var(--font-mono)">W</text></g>
+      <g rx-if="dontWalkOn"><text x="10" y="14" text-anchor="middle" fill="#f33" font-size="11" font-weight="bold" font-family="var(--font-mono)">✕</text></g>
+    </g>
+    <!-- SW corner -->
+    <g transform="translate(240, 340)">
+      <rect x="0" y="0" width="20" height="20" rx="2" fill="#111" stroke="#444" stroke-width="1"/>
+      <g rx-if="walkOn"><text x="10" y="14" text-anchor="middle" fill="#3f3" font-size="9" font-weight="bold" font-family="var(--font-mono)">W</text></g>
+      <g rx-if="dontWalkOn"><text x="10" y="14" text-anchor="middle" fill="#f33" font-size="11" font-weight="bold" font-family="var(--font-mono)">✕</text></g>
+    </g>
+    <!-- SE corner -->
+    <g transform="translate(340, 340)">
+      <rect x="0" y="0" width="20" height="20" rx="2" fill="#111" stroke="#444" stroke-width="1"/>
+      <g rx-if="walkOn"><text x="10" y="14" text-anchor="middle" fill="#3f3" font-size="9" font-weight="bold" font-family="var(--font-mono)">W</text></g>
+      <g rx-if="dontWalkOn"><text x="10" y="14" text-anchor="middle" fill="#f33" font-size="11" font-weight="bold" font-family="var(--font-mono)">✕</text></g>
+    </g>
+
+    <!-- Central pedestrian signal (dead middle, 36×44) -->
+    <g transform="translate(282, 278)">
+      <rect x="0" y="0" width="36" height="44" rx="3" fill="#111" stroke="#444" stroke-width="1.5"/>
+      <g rx-if="walkOn">
+        <circle cx="18" cy="9" r="4" fill="#3f3"/>
+        <line x1="18" y1="13" x2="18" y2="22" stroke="#3f3" stroke-width="2.5" stroke-linecap="round"/>
+        <line x1="18" y1="16" x2="12" y2="13" stroke="#3f3" stroke-width="2" stroke-linecap="round"/>
+        <line x1="18" y1="16" x2="24" y2="11" stroke="#3f3" stroke-width="2" stroke-linecap="round"/>
+        <line x1="18" y1="22" x2="13" y2="32" stroke="#3f3" stroke-width="2" stroke-linecap="round"/>
+        <line x1="18" y1="22" x2="23" y2="30" stroke="#3f3" stroke-width="2" stroke-linecap="round"/>
+      </g>
+      <g rx-if="dontWalkOn">
+        <circle cx="18" cy="9" r="4" fill="#f33"/>
+        <line x1="18" y1="13" x2="18" y2="22" stroke="#f33" stroke-width="2.5" stroke-linecap="round"/>
+        <line x1="18" y1="16" x2="11" y2="16" stroke="#f33" stroke-width="2" stroke-linecap="round"/>
+        <line x1="18" y1="16" x2="25" y2="16" stroke="#f33" stroke-width="2" stroke-linecap="round"/>
+        <line x1="18" y1="22" x2="14" y2="34" stroke="#f33" stroke-width="2" stroke-linecap="round"/>
+        <line x1="18" y1="22" x2="22" y2="34" stroke="#f33" stroke-width="2" stroke-linecap="round"/>
+      </g>
+    </g>
+  </svg>
+
+  <div class="status">
+    <p>State: <span class="badge">{{stateName}}</span></p>
+    <p class="queued" rx-if="pedQueued">🚶 Pedestrian queued</p>
+    <p class="emergency" rx-if="emergencyOn">🚨 EMERGENCY OVERRIDE</p>
+  </div>
+
+  <div class="controls">
+    <button onclick="pedestrianRequest.next()">Request Walk</button>
+    <button onclick="emergencySignal.next()">Emergency</button>
+    <button onclick="resumeNormal.next()">Resume</button>
+  </div>
+</div>`,
+          "styles": `.intersection { display: flex; flex-direction: column; gap: 1rem; padding: 1.5rem; font-family: var(--font-mono); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); max-width: 560px; }
+.diagram { width: 100%; height: auto; border-radius: var(--radius-sm); background: #0a0a0a; }
+
+.status { display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.85rem; }
+.badge { background: var(--bg-4); padding: 0.2rem 0.5rem; border-radius: var(--radius-sm); font-size: 0.8rem; text-transform: uppercase; }
+.queued { color: #ffcc44; margin: 0; }
+.emergency { color: #ff4444; margin: 0; animation: pulse 1s infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+.controls { display: flex; gap: 0.5rem; }
+button { background: var(--bg-4); border: 1px solid var(--border); color: var(--text); font-family: var(--font-mono); padding: 0.4rem 0.8rem; border-radius: var(--radius-sm); cursor: pointer; font-size: 0.85rem; }
+button:hover { border-color: var(--accent); color: var(--accent); }`
+        }
+      }
+    ]
+  },
+  {
     name: 'checkout',
     manifest: {
       name: 'checkout',
@@ -605,3 +962,4 @@ export const paymentCard$ = payment.state$.pipe(map(s => {
     ],
   }
 ]
+

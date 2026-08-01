@@ -99,6 +99,7 @@ function workspaceStatusIconKind$(files: RuntimeFile[]): Observable<StatusIconKi
             font-family: var(--font-mono);
             font-size: 0.8rem;
             overflow-y: auto;
+            overflow-x: hidden;
             user-select: none;
         }
         .header {
