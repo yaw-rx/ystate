@@ -113,7 +113,7 @@ button:hover { border-color: var(--accent); color: var(--accent); }`,
 import { Heater, temperature$, turnOnSignal, turnOffSignal, upperLimitT$, lowerLimitT$ } from './heater.js'
 
 // --- Simulation Constants ---
-const TICK_INTERVAL_MS = 100 // Speed: 100ms per tick (10 ticks/sec)
+const TICK_INTERVAL_MS = 10 // Speed: 10ms per tick
 const TIME_SCALE = 1.0       // 1.0 = normal physics, 2.0 = 2x faster physics
 
 // Derived delta-t in seconds passed to the thermal equation per tick
