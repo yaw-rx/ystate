@@ -141,10 +141,18 @@ machineSet: MachineSet<TNodes, TEdges, TTransitions>,
     data: nodes[entry],
   }
   let subs: Subscription[] = []
+  // Bumped on every teardown. A synchronous `$` (e.g. `of(x)`, `EMPTY`) emits
+  // re-entrantly during `.subscribe()` - before its own subscription is even
+  // registered - so a same-tick emit-then-complete would otherwise fire the
+  // transition and then hit the completion guard at the *new* node. Each
+  // listen batch captures the epoch; once a transition bumps it, every further
+  // emission from the just-left node's subscriptions is ignored.
+  let epoch = 0
 
   function teardown() {
     for (const s of subs) s.unsubscribe()
     subs = []
+    epoch++
   }
 
   function parseEdgeOn(edgeDef: EdgeDef): { name: string; handler: HandlerDirection } {
@@ -186,12 +194,20 @@ machineSet: MachineSet<TNodes, TEdges, TTransitions>,
       grouped.get(groupKey)!.edges.push([edgeName, edge, handler])
     }
 
+    // All subscriptions in this batch belong to the node being entered; if a
+    // synchronous emission transitions us away mid-loop, the epoch changes and
+    // we stop wiring the rest / ignore late emissions.
+    const myEpoch = epoch
+    const stale = (): boolean => epoch !== myEpoch
+
     for (const { transitionName, namespace: ns, edges } of grouped.values()) {
+      if (stale()) break
       const tr = correspondence.transitions[ns]?.[transitionName]
       if (!tr) continue
 
       const sub = (tr.$(runningMachines ?? {}) as Observable<unknown>).subscribe({
         next: (value: unknown) => {
+          if (stale()) return
           const match = edges.find(([_, __, h]) => h === 'next')
           if (!match) return
           const [edgeName, edge] = match
@@ -203,6 +219,7 @@ machineSet: MachineSet<TNodes, TEdges, TTransitions>,
           enter(to, newData)
         },
         error: (err: unknown) => {
+          if (stale()) return
           const match = edges.find(([_, __, h]) => h === 'error')
           if (!match || !tr.error) {
             const wrapped = new MachineUnhandledError(current.node, transitionName, ns, err)
@@ -221,6 +238,7 @@ machineSet: MachineSet<TNodes, TEdges, TTransitions>,
           enter(to, newData)
         },
         complete: () => {
+          if (stale()) return
           const match = edges.find(([_, __, h]) => h === 'complete')
           if (!match || !tr.complete) {
             const wrapped = new MachineCompletionError(current.node, transitionName, ns)
@@ -239,7 +257,10 @@ machineSet: MachineSet<TNodes, TEdges, TTransitions>,
           enter(to, newData)
         },
       })
-      subs.push(sub)
+      // If this sub emitted synchronously and already transitioned us on, the
+      // epoch has moved - don't register it against the new node's batch.
+      if (stale()) sub.unsubscribe()
+      else subs.push(sub)
     }
   }
 

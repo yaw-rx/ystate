@@ -268,21 +268,23 @@ const simulatePayment = () => timer(3000).pipe(
   })
 )
 
-// The UI's "Pay" button. Moves checkout -> processing, but only when logged
-// in - gated below against the shared auth instance.
-export const payRequest = new Subject<void>()
+// The card details the "Pay" button submits - the payment request carries the
+// entered card, not just a bare signal.
+export interface Card { number: string; expiry: string; cvc: string }
+export const payRequest = new Subject<Card>()
 export const resetRequest = new Subject<void>()
-
 export const Payment = define({
   nodes: {
     checkout: {},
     notLoggedIn: {},
-    processing: { orderId: '' },
+    // orderId/card are set on pay and cleared to null on reset - both empty
+    // until a card is actually submitted.
+    processing: { orderId: null as string | null, card: null as Card | null },
     // approved is terminal: once paid we're done. No reset off it - stop and
     // start the machine for another run.
     approved: { confirmedAt: 0, txId: '' },
     declined: { reason: '' },
-    stalled: { orderId: '' },
+    stalled: { orderId: null as string | null },
   },
   deps: {
     auth: Auth,
@@ -290,7 +292,7 @@ export const Payment = define({
   edges: {
     pay: { from: 'checkout', to: 'processing', on: 'pay.next' },
     payBlocked: { from: 'checkout', to: 'notLoggedIn', on: 'pay.error' },
-    dismiss: { from: 'notLoggedIn', to: 'checkout', on: 'dismiss.next' },
+    dismiss: { from: 'notLoggedIn', to: 'checkout', on: 'dismiss.complete' },
     approve: { from: 'processing', to: 'approved', on: 'process.next' },
     decline: { from: 'processing', to: 'declined', on: 'process.error' },
     stall: { from: 'processing', to: 'stalled', on: 'process.complete' },
@@ -303,17 +305,18 @@ export const Payment = define({
   pay: {
     $: (deps) => payRequest.pipe(
       withLatestFrom(deps.auth.state$),
-      map(([_, auth]) => {
+      map(([card, auth]) => {
         if (auth.node !== 'authenticated') throw new Error('not logged in')
-        return {}
+        return card
       })
     ),
-    next: () => ({ orderId: \`ORD-\${Date.now()}\` }),
+    next: (card: Card) => ({ orderId: \`ORD-\${Date.now()}\`, card }),
     error: () => ({}),
   },
   dismiss: {
-    $: () => timer(1500),
+    $: () => EMPTY,
     next: () => ({}),
+    complete: () => ({}),
   },
   process: {
     $: () => simulatePayment(),
@@ -323,7 +326,7 @@ export const Payment = define({
   },
   reset: {
     $: () => resetRequest,
-    next: () => ({ orderId: '' }),
+    next: () => ({ orderId: null, card: null }),
   },
 })`,
       },
@@ -331,7 +334,7 @@ export const Payment = define({
         name: 'basket.ts',
         status: 'unanalyzed',
         content: `import { define } from '@yaw-rx/ystate'
-import { Subject, timer, mergeMap, throwError, of, withLatestFrom, filter } from 'rxjs'
+import { Subject, timer, mergeMap, throwError, of } from 'rxjs'
 import { Auth } from './auth.js'
 import { Payment } from './payment.js'
 
@@ -371,7 +374,7 @@ export const Basket = define({
     addErrorFromHasItems: { from: 'hasItems', to: 'addFailed', on: 'addItem.error' },
     addErrorFromFailed: { from: 'addFailed', to: 'addFailed', on: 'addItem.error' },
     added: { from: 'addingItem', to: 'hasItems', on: 'itemAdded.next' },
-    checkout: { from: 'hasItems', to: refs.payment.nodes.processing, on: 'checkout.next' },
+    checkout: { from: 'hasItems', to: refs.payment.nodes.checkout, on: 'checkout.next' },
   }),
 }).implement({
   addItem: {
@@ -383,14 +386,12 @@ export const Basket = define({
     $: () => simulateItemConfirmation(),
     next: (_result, dest, source) => ({ items: [...dest.items, source.itemId] }),
   },
+  // Ungated: anyone can proceed to the checkout screen. The auth gate lives on
+  // payment's pay edge (checkout -> processing), so a logged-out user reaches
+  // checkout and is bounced to notLoggedIn when they try to pay.
   checkout: {
-    $: (deps) => checkoutRequest.pipe(
-      mergeMap(() => timer(500).pipe(
-        withLatestFrom(deps.auth.state$),
-        filter(([_, auth]) => auth.node === 'authenticated'),
-      ))
-    ),
-    next: (_result, _dest, _source, edge) => ({ orderId: \`ORD-\${Date.now()}-\${edge}\` }),
+    $: () => checkoutRequest,
+    next: () => ({}),
   },
 })`,
       },
@@ -452,10 +453,15 @@ export const init = () => {
   <div class="section basket-section">
     <h4>Basket</h4>
     <p>State: <span class="badge">{{basketState}}</span></p>
-    <p class="items">
-      <span rx-if="showItems">Items ({{itemCount}}): {{itemsDisplay}}</span> <!-- SHOULD USE RX FOR HERE FOR A LIST-->
+    <div class="items">
+      <div rx-if="showItems">
+        <span class="items-head">Items ({{itemCount}})</span>
+        <ul class="item-list" rx-for="item of basketItems">
+          <li>{{item}}</li>
+        </ul>
+      </div>
       <span rx-if="showItemId">Adding item: {{addingItemId}}</span>
-    </p>
+    </div>
     <p class="error">Error: {{basketError}}</p>
     <div class="controls">
       <button onclick="addItemRequest.next()">Add Item</button>
@@ -476,6 +482,9 @@ h4 { margin: 0 0 0.5rem; color: var(--accent); }
 p { margin: 0.3rem 0; font-size: 0.9rem; }
 .badge { background: var(--bg-4); padding: 0.15rem 0.5rem; border-radius: var(--radius-sm); font-size: 0.8rem; text-transform: uppercase; }
 .items { font-size: 0.8rem; color: var(--text-secondary); word-break: break-all; min-height: 1.2em; }
+.items-head { color: var(--dim); }
+.item-list { margin: 0.35rem 0 0; padding-left: 1.25rem; list-style: disc; }
+.item-list li { margin: 0.15rem 0; }
 .error { color: #ff8888; min-height: 1.2em; }
 .controls { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
 button { background: var(--bg-4); border: 1px solid var(--border); color: var(--text); font-family: var(--font-mono); padding: 0.35rem 0.7rem; border-radius: var(--radius-sm); cursor: pointer; font-size: 0.85rem; }
@@ -509,7 +518,7 @@ export const basketState$ = basket.state$.pipe(map(s => s.node))
 // carries only the itemId in flight, so it shows that. rx-if picks the block.
 export const showItems$ = basket.state$.pipe(map(s => s.node === 'hasItems' || s.node === 'addFailed'))
 export const showItemId$ = basket.state$.pipe(map(s => s.node === 'addingItem'))
-export const itemsDisplay$ = basket.state$.pipe(map(s => s.node === 'hasItems' || s.node === 'addFailed' ? (s.data.items as string[]).join(', ') || 'none' : ''))
+export const basketItems$ = basket.state$.pipe(map(s => s.node === 'hasItems' || s.node === 'addFailed' ? (s.data.items as string[]) : []))
 export const itemCount$ = basket.state$.pipe(map(s => s.node === 'hasItems' || s.node === 'addFailed' ? (s.data.items as string[]).length : 0))
 export const addingItemId$ = basket.state$.pipe(map(s => s.node === 'addingItem' ? String(s.data.itemId ?? '') : ''))
 export const basketError$ = basket.state$.pipe(map(s => s.node === 'addFailed' ? String(s.data.error ?? '') : ''))
@@ -529,9 +538,18 @@ export const init = () => ({ basket })`,
   <h3>Payment Gateway</h3>
   <p>State: <span class="badge">{{paymentState}}</span></p>
   <p>Order: {{paymentOrderId}}</p>
+  <p>Card: {{paymentCard}}</p>
   <p>TX: <code>{{paymentTxId}}</code></p>
   <p class="error">Reason: {{paymentReason}}</p>
+  <div class="card">
+    <label>Card number <input class="card-input" value="4242 4242 4242 4242" oninput="onCardNumber($event)" /></label>
+    <div class="card-row">
+      <label>Expiry <input class="card-input" value="12 / 29" oninput="onCardExpiry($event)" /></label>
+      <label>CVC <input class="card-input" value="123" oninput="onCardCvc($event)" /></label>
+    </div>
+  </div>
   <div class="controls">
+    <button onclick="pay()">Pay</button>
     <button onclick="resetRequest.next()">Run Again</button>
   </div>
 </div>`,
@@ -540,21 +558,34 @@ h3 { margin: 0 0 0.5rem; color: var(--accent); }
 p { margin: 0.3rem 0; font-size: 0.9rem; }
 .badge { background: var(--bg-4); padding: 0.2rem 0.6rem; border-radius: var(--radius-sm); font-size: 0.85rem; text-transform: uppercase; }
 .error { color: #ff8888; min-height: 1.2em; }
-.controls { margin-top: 0.5rem; }
+.card { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.5rem; }
+.card label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.65rem; color: var(--dim); text-transform: uppercase; letter-spacing: 0.05em; }
+.card-row { display: flex; gap: 0.5rem; }
+.card-input { background: var(--bg-4); border: 1px solid var(--border); color: var(--text); font-family: var(--font-mono); font-size: 0.85rem; padding: 0.35rem 0.5rem; border-radius: var(--radius-sm); }
+.card-input:focus { outline: none; border-color: var(--accent); }
+.controls { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
 button { background: var(--bg-4); border: 1px solid var(--border); color: var(--text); font-family: var(--font-mono); padding: 0.4rem 0.8rem; border-radius: var(--radius-sm); cursor: pointer; }
 button:hover { border-color: var(--accent); color: var(--accent); }
 code { background: var(--bg-4); padding: 0.2rem 0.4rem; border-radius: var(--radius-sm); font-size: 0.75rem; word-break: break-all; }`,
         },
         content: `import { basket } from './basket.form.js'
-import { resetRequest } from './payment.js'
-import { map } from 'rxjs'
+import { payRequest, resetRequest, type Card } from './payment.js'
+import { BehaviorSubject, map } from 'rxjs'
 
-// "Run Again" drives the reset transition wired inside the super-graph
-// (payment.reset subscribes to this signal).
+// Card fields captured from the inputs. "Pay" submits them as the payment
+// request payload (checkout -> processing, gated by auth); "Run Again" resets a
+// declined/stalled payment. Both drive transitions wired inside the super-graph.
+const cardNumber$ = new BehaviorSubject('4242 4242 4242 4242')
+const cardExpiry$ = new BehaviorSubject('12 / 29')
+const cardCvc$ = new BehaviorSubject('123')
+export const onCardNumber = (e: Event) => cardNumber$.next((e.target as HTMLInputElement).value)
+export const onCardExpiry = (e: Event) => cardExpiry$.next((e.target as HTMLInputElement).value)
+export const onCardCvc = (e: Event) => cardCvc$.next((e.target as HTMLInputElement).value)
+export const pay = () => payRequest.next({ number: cardNumber$.value, expiry: cardExpiry$.value, cvc: cardCvc$.value })
 export { resetRequest }
 
 // Payment has no graph of its own: it's UNIONED into the basket super-graph
-// (basket's checkout edge targets payment.processing). So this panel is a pure
+// (basket's checkout edge targets payment.checkout). So this panel is a pure
 // view - it reads payment's slice out of the running basket imported from
 // basket.form, where the nodes are namespace-prefixed 'payment.*'. It owns no
 // machine, so there is no init().
@@ -563,7 +594,13 @@ const payment = basket.runningMachines['payment']
 export const paymentState$ = payment.state$.pipe(map(s => s.node.replace(/^payment\\./, '')))
 export const paymentTxId$ = payment.state$.pipe(map(s => s.node === 'payment.approved' ? String(s.data.txId ?? '') : ''))
 export const paymentReason$ = payment.state$.pipe(map(s => s.node === 'payment.declined' ? String(s.data.reason ?? '') : ''))
-export const paymentOrderId$ = payment.state$.pipe(map(s => s.node === 'payment.processing' || s.node === 'payment.stalled' ? String(s.data.orderId ?? '') : ''))`,
+export const paymentOrderId$ = payment.state$.pipe(map(s => s.node === 'payment.processing' || s.node === 'payment.stalled' ? String(s.data.orderId ?? '') : ''))
+// The card that was submitted, shown while processing - proof it rode the pay
+// request through to the node.
+export const paymentCard$ = payment.state$.pipe(map(s => {
+  const card = s.node === 'payment.processing' ? s.data.card as Card | null : null
+  return card ? 'ending ' + (card.number.split(' ').pop() ?? '') : ''
+}))`,
       },
     ],
   }

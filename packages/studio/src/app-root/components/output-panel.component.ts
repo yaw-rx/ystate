@@ -1,13 +1,16 @@
 import { Component, RxElement, state } from '@yaw-rx/core'
 import { RxIf } from '@yaw-rx/core/directives/rx-if'
 import { RxFor } from '@yaw-rx/core/directives/rx-for'
-import { map, of, tap, type Observable, type Subscription } from 'rxjs'
+import { map, tap, type Observable, type Subscription } from 'rxjs'
+import type { MachineStatus } from '@yaw-rx/ystate'
 import type { SandboxResult, ClosureResult, ClosureIssue, MachineSetValidationIssue } from '../services/sandbox.service.js'
 
-/** One running machine a form's init() produced: its name (the init-map key) and live lifecycle status. */
+/** One running machine a form's init() produced: its name (the init-map key), live lifecycle status, and - if it errored - the error class name (a meaningful subtype like MachineCompletionError) plus its message. */
 export interface RunningMachineInfo {
     name: string
-    status: string
+    status: MachineStatus
+    errorType?: string
+    error?: string
 }
 
 /**
@@ -70,8 +73,20 @@ interface DetailEntry {
             </button>
         </div>
         <div class="details" [style.display]="detailsDisplay" [style.height]="detailsHeight">
-            <div rx-for="m of runningMachines by name">
-                <div class="entry" [style.color]="machineColor(m.status)">▶ {{m.name}} — {{m.status}}</div>
+            <div rx-for="m of runningRows by name">
+                <div class="entry running">▶ {{m.name}} — {{m.status}}</div>
+            </div>
+            <div rx-for="m of completeRows by name">
+                <div class="entry completed">▶ {{m.name}} — {{m.status}}</div>
+            </div>
+            <div rx-for="m of stoppedRows by name">
+                <div class="entry stopped">▶ {{m.name}} — {{m.status}}</div>
+            </div>
+            <div rx-for="m of erroredRows by name">
+                <div class="errored-row">
+                    <div class="entry errored">▶ {{m.name}} — {{m.errorType}}</div>
+                    <div class="issue">· {{m.error}}</div>
+                </div>
             </div>
             <div rx-for="form of formReports by name">
                 <div class="entry form-name" [style.color]="form.color">{{form.name}}</div>
@@ -178,9 +193,13 @@ interface DetailEntry {
             padding-left: 12px;
             white-space: pre-wrap;
         }
-        /* Play mode: live machines. Green = a healthy running machine. */
+        /* Play mode: live machines, one constant-colour section per lifecycle
+           status - green running, blue done, yellow stopped, red errored. */
         .status .success { color: var(--success); }
         .entry.running { color: var(--success); padding-left: 12px; }
+        .entry.completed { color: var(--accent); padding-left: 12px; }
+        .entry.stopped { color: var(--warn); padding-left: 12px; }
+        .entry.errored { color: var(--error); padding-left: 12px; }
         /* Form pool: machines a form runs, green; form name coloured by
            its own traffic-light status via [style.color]. Attachments are
            neutral info, not a works/broken status, so blue - never a
@@ -214,7 +233,7 @@ export class OutputPanel extends RxElement {
 
     // Run-mode header, traffic-lit per lifecycle status (green running/done,
     // yellow stopped, red error) - the same convention as graph closures.
-    private countStatus(...statuses: string[]): Observable<number> {
+    private countStatus(...statuses: MachineStatus[]): Observable<number> {
         return this.runningMachines$.pipe(map(m => m.filter(x => statuses.includes(x.status)).length))
     }
 
@@ -233,19 +252,18 @@ export class OutputPanel extends RxElement {
     get errorCountText$(): Observable<string> { return this.errorCount$.pipe(map(n => `${n} errored machine${n !== 1 ? 's' : ''}`)) }
     get doneCountText$(): Observable<string> { return this.doneCount$.pipe(map(n => `${n} completed machine${n !== 1 ? 's' : ''}`)) }
 
-    /** Traffic-light colour for one running machine's lifecycle status - matches the header. */
-    // STATUS ISNT SUBSCRIBABLE AND FUNCTIONS CAN ONLY BE INITED ONCE WITH STATIC PARAMS THIS IS STUPID
-    // WE SHOULD HAVE SECTIONS OF CONSTANT COLOR AND FILTER RUNNABLE MACHINES WITH RX IFS
-    machineColor(status: string): Observable<string> {
-        console.log('WHAT ', status);
-        const colorMap: Record<string, string> = {
-            'error': 'var(--error)',
-            'stopped': 'var(--warn)',
-            'complete': 'var(--accent)'
-        };
-
-        return of(colorMap[status] ?? 'var(--success)');
+    // One reactive filtered list per lifecycle status, so each renders in a
+    // section of constant colour. The colour lives on the CSS class, never on
+    // a per-row expression - a plain function couldn't re-run when a machine's
+    // status changes, but these lists re-emit off runningMachines$.
+    private byStatus(...statuses: MachineStatus[]): Observable<RunningMachineInfo[]> {
+        return this.runningMachines$.pipe(map(m => m.filter(x => statuses.includes(x.status))))
     }
+
+    get runningRows$(): Observable<RunningMachineInfo[]> { return this.byStatus('running') }
+    get stoppedRows$(): Observable<RunningMachineInfo[]> { return this.byStatus('stopped') }
+    get erroredRows$(): Observable<RunningMachineInfo[]> { return this.byStatus('error') }
+    get completeRows$(): Observable<RunningMachineInfo[]> { return this.byStatus('complete') }
 
     get hasForms$(): Observable<boolean> {
         return this.formReports$.pipe(map(r => r.length > 0))

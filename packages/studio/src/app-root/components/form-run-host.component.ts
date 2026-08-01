@@ -9,6 +9,23 @@ import type { RunningMachineInfo } from './output-panel.component.js'
 import './output-panel.component.js'
 
 /**
+ * A readable message from a machine's errored `state$`. The runtime wraps the
+ * failure in a `MachineUnhandledError` whose message names the node/transition;
+ * its `cause` is the underlying throw (e.g. a form's own Error), so we append
+ * that when present.
+ */
+function machineErrorMessage(e: unknown): string {
+    const err = e instanceof Error ? e : new Error(String(e))
+    const cause = (err as { cause?: unknown }).cause
+    return cause instanceof Error ? `${err.message} — ${cause.message}` : err.message
+}
+
+/** The error's class name - a meaningful subtype (MachineUnhandledError / MachineCompletionError) shown in place of the bare 'error' status. */
+function machineErrorType(e: unknown): string {
+    return e instanceof Error ? e.constructor.name : 'Error'
+}
+
+/**
  * The RHS view while forms run. Always mounted (display-swapped with the
  * editor by the page), driven by `[playing]`: false->true stamps the
  * workspace's forms as live elements, true->false tears them down (which
@@ -148,15 +165,22 @@ export class FormRunHost extends RxElement {
         this.formRun.setRunningMachines(all)
 
         // Rebuild the terminal's machine list, subscribing each machine's
-        // status$ so the reported status stays live (running -> stopped).
+        // status$ so the reported status stays live (running -> stopped), and
+        // state$'s error so an unhandled-edge failure surfaces its message -
+        // status$ only reports the bare 'error'; the message rides state$'s
+        // error channel (runtime.ts: stateSubject.error(wrapped)).
         for (const s of this.statusSubs) s.unsubscribe()
         this.statusSubs = []
         this.machineInfos = named.map(([name]) => ({ name, status: 'running' }))
         named.forEach(([name, machine], i) => {
-            this.statusSubs.push(machine.status$.subscribe(status => {
+            const patch = (fields: Partial<RunningMachineInfo>): void => {
                 const next = [...this.machineInfos]
-                if (next[i]) next[i] = { name, status }
+                if (next[i]) next[i] = { ...next[i], name, ...fields }
                 this.machineInfos = next
+            }
+            this.statusSubs.push(machine.status$.subscribe(status => patch({ status })))
+            this.statusSubs.push(machine.state$.subscribe({
+                error: e => patch({ status: 'error', errorType: machineErrorType(e), error: machineErrorMessage(e) }),
             }))
         })
     }
