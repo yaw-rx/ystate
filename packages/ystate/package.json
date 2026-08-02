@@ -1,9 +1,18 @@
 {
   "name": "@yaw-rx/ystate",
-  "version": "0.0.1",
+  "version": "0.0.2",
+  "homepage": "https://ystate.github.io/",
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yaw-rx/ystate.git",
+    "directory": "packages/ystate"
+  },
+  "bugs": {
+    "url": "https://github.com/yaw-rx/ystate/issues"
   },
   "type": "module",
   "main": "./dist/index.js",

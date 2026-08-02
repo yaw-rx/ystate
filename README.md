@@ -3,6 +3,10 @@
 **Pure finite state machines for TypeScript and RxJS.**  
 Write declarative, composable state graphs, with full compile-time verification and no mutable context.
 
+**[Try it live in the Studio](https://ystate.github.io/)**
+
+[![npm version](https://img.shields.io/npm/v/@yaw-rx/ystate)](https://www.npmjs.com/package/@yaw-rx/ystate)
+
 ## Why YState?
 
 State machines are supposed to be pure: a set of states, a set of inputs, and a function that maps (state, input) -> (state).  
@@ -625,6 +629,16 @@ The machine has no side effects. It transitions between `power` and `idle`, but 
 The graph topology is the complete specification of the thermostat's behaviour. Every state it can be in and every transition it can make is visible in the edges. `.close()` validates the graph before it runs, so you know that every edge references a real state. The topology is an honest audit of the machine.
 
 The machine and the simulation are just observables. Neither knows the other exists. `temperature$` feeds into the machine through `$`, `state$` feeds back into the simulation. You could swap the physics for a test harness or a real sensor and the machine wouldn't change.
+
+## Studio
+
+**[ystate.github.io](https://ystate.github.io/)**
+
+Design your system's graph topology as a set of nodes and edges, implement your machine by adding transitions, design a form to drive your state machine with control signals and visualizations, then click the play button and interact with your creation.
+
+Export the whole thing as a library with the download button, send someone the library.json, and they can drag it straight onto the same site to open it and pick up where you left off - no account required.
+
+See [packages/studio](packages/studio) for more.
 
 ## License
 
