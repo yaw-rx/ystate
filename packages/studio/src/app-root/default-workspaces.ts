@@ -281,9 +281,8 @@ import { Pedestrian, emergencySignal, resumeNormal } from './pedestrian.js'
 // loser's subscription is torn down. That race is the entire pedestrian
 // gate.
 //
-// pedestrianTimer's $ reads deps.pedestrian.state$: this machine observing
-// another independently meaningful machine's own validated output, the
-// same shape payment.ts uses to read deps.auth.state$.
+// pedestrianTimer's $ reads deps.pedestrian.state$: this machine observes
+// Pedestrian's own validated output directly.
 // ---------------------------------------------------------------------------
 export const TrafficLight = define({
   nodes: {
