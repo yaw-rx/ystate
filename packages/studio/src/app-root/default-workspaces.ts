@@ -196,174 +196,220 @@ export const init = () => {
     "name": "traffic",
     "manifest": {
       "name": "traffic",
-      "concepts": [],
+      "concepts": ["pedestrian.ts", "traffic.ts"],
       "metadata": {}
     },
     "files": [
       {
-        "name": "traffic-light.ts",
+        "name": "pedestrian.ts",
         "content": `import { define } from '@yaw-rx/ystate'
-import { BehaviorSubject, Subject, timer, filter, mergeMap, of, delay, NEVER, take } from 'rxjs'
+import { Subject } from 'rxjs'
 
 // ---------------------------------------------------------------------------
 // External signals
 // ---------------------------------------------------------------------------
-export const pedestrianRequest = new Subject<void>()
-export const emergencySignal   = new Subject<void>()
-export const resumeNormal      = new Subject<void>()
+// Pressed by the pedestrian. 'dontWalk' is the only node with an outgoing
+// edge for it, so the topology itself governs when a press registers.
+export const pedestrianButton = new Subject<void>()
+
+// Pulsed by traffic-system.form.ts, which reads the light's state$ and
+// drives these from outside both graphs - the coupling seam between the
+// two machines.
+export const walkSignal = new Subject<void>()
+export const clearSignal = new Subject<void>()
+
+// Shared with traffic.ts: an emergency clears the pedestrian signal to
+// dontWalk from wherever it is, the same way the traffic light drops to
+// emergencyFlash from wherever it is.
+export const emergencySignal = new Subject<void>()
+export const resumeNormal = new Subject<void>()
 
 // ---------------------------------------------------------------------------
-// Shared mutable state (read by timer guards inside the machine)
+// Pedestrian: dontWalk -> requested -> walking -> dontWalk mirrors the
+// light's own allRed -> pedestrianWalk -> pedestrianClear -> allRed cycle,
+// viewed from the crossing's side of the intersection.
 // ---------------------------------------------------------------------------
-export const pedestrianQueued$ = new BehaviorSubject(false)
-export const nextDirection$    = new BehaviorSubject<'ns' | 'ew'>('ns')
-
-// Idempotent queue: rapid presses don't stack.
-pedestrianRequest.subscribe(() => {
-  if (!pedestrianQueued$.value) pedestrianQueued$.next(true)
-})
-
-// ---------------------------------------------------------------------------
-// Machine definition
-// ---------------------------------------------------------------------------
-export const TrafficLight = define({
+export const Pedestrian = define({
   nodes: {
-    allRed: {},
-    nsGreen: {},
-    nsYellow: {},
-    ewGreen: {},
-    ewYellow: {},
-    pedestrianWalk: {},
-    pedestrianClear: {},
-    emergencyFlash: {},
+    dontWalk: {},
+    requested: {},
+    walking: {},
   },
   edges: {
-    // --- Normal vehicle cycle ----------------------------------------------
-    nsGo:       { from: 'allRed',   to: 'nsGreen',  on: 'nsCycleTimer.next' },
-    nsCaution:  { from: 'nsGreen',  to: 'nsYellow', on: 'nsTimer.next' },
-    nsStop:     { from: 'nsYellow', to: 'allRed',   on: 'nsYellowTimer.next' },
-
-    ewGo:       { from: 'allRed',   to: 'ewGreen',  on: 'ewCycleTimer.next' },
-    ewCaution:  { from: 'ewGreen',  to: 'ewYellow', on: 'ewTimer.next' },
-    ewStop:     { from: 'ewYellow', to: 'allRed',   on: 'ewYellowTimer.next' },
-
-    // --- Pedestrian phase (wins the race at all-red when queued) -----------
-    pedStart:    { from: 'allRed', to: 'pedestrianWalk',  on: 'pedestrianTimer.next' },
-    pedWalkDone: { from: 'pedestrianWalk',  to: 'pedestrianClear', on: 'walkTimer.next' },
-    pedClearDone:{ from: 'pedestrianClear', to: 'allRed',          on: 'clearTimer.next' },
-
-    // --- Emergency overrides from every normal state -----------------------
-    emergencyAllRed:   { from: 'allRed',          to: 'emergencyFlash', on: 'emergency.next' },
-    emergencyNsGreen:  { from: 'nsGreen',         to: 'emergencyFlash', on: 'emergency.next' },
-    emergencyNsYellow: { from: 'nsYellow',        to: 'emergencyFlash', on: 'emergency.next' },
-    emergencyEwGreen:  { from: 'ewGreen',         to: 'emergencyFlash', on: 'emergency.next' },
-    emergencyEwYellow: { from: 'ewYellow',        to: 'emergencyFlash', on: 'emergency.next' },
-    emergencyPedWalk:  { from: 'pedestrianWalk',  to: 'emergencyFlash', on: 'emergency.next' },
-    emergencyPedClear: { from: 'pedestrianClear', to: 'emergencyFlash', on: 'emergency.next' },
-    resume:            { from: 'emergencyFlash',  to: 'allRed',         on: 'resume.next' },
+    press: { from: 'dontWalk', to: 'requested', on: 'buttonPress.next' },
+    go:    { from: 'requested', to: 'walking', on: 'walkSignal.next' },
+    done:  { from: 'walking', to: 'dontWalk', on: 'clearSignal.next' },
+    // An emergency vehicle clears the crossing regardless of where the
+    // pedestrian phase is - waiting for the walk, or already walking.
+    emergencyFromRequested: { from: 'requested', to: 'dontWalk', on: 'emergencyClear.next' },
+    emergencyFromWalking:   { from: 'walking',   to: 'dontWalk', on: 'emergencyClear.next' },
   },
 }).implement({
-  // Only fires when nextDirection === 'ns' and no pedestrian is waiting.
-  nsCycleTimer: {
-    $: () => timer(1000).pipe(
-      mergeMap(() => (nextDirection$.value === 'ns' && !pedestrianQueued$.value) ? of({}) : NEVER),
-      take(1),
-    ),
+  buttonPress: {
+    $: () => pedestrianButton,
     next: () => ({}),
   },
-  nsTimer: {
-    $: () => timer(4000),
+  walkSignal: {
+    $: () => walkSignal,
     next: () => ({}),
   },
-  nsYellowTimer: {
-    $: () => timer(2000),
-    next: () => {
-      nextDirection$.next('ew')
-      return {}
-    },
-  },
-
-  // Only fires when nextDirection === 'ew' and no pedestrian is waiting.
-  ewCycleTimer: {
-    $: () => timer(1000).pipe(
-      mergeMap(() => (nextDirection$.value === 'ew' && !pedestrianQueued$.value) ? of({}) : NEVER),
-      take(1),
-    ),
+  clearSignal: {
+    $: () => clearSignal,
     next: () => ({}),
   },
-  ewTimer: {
-    $: () => timer(4000),
-    next: () => ({}),
-  },
-  ewYellowTimer: {
-    $: () => timer(2000),
-    next: () => {
-      nextDirection$.next('ns')
-      return {}
-    },
-  },
-
-  // Fires 400 ms after a pedestrian is queued while in all-red, beating the
-  // 1000 ms vehicle cycle timers. If the request arrives too late in the
-  // all-red window, it rides over to the next cycle.
-  pedestrianTimer: {
-    $: () => pedestrianQueued$.pipe(filter(v => v), delay(400), take(1)),
-    next: () => {
-      pedestrianQueued$.next(false)
-      return {}
-    },
-  },
-  walkTimer: {
-    $: () => timer(8000),
-    next: () => ({}),
-  },
-  clearTimer: {
-    $: () => timer(2000),
-    next: () => ({}),
-  },
-
-  emergency: {
+  emergencyClear: {
     $: () => emergencySignal,
-    next: () => ({}),
-  },
-  resume: {
-    $: () => resumeNormal,
     next: () => ({}),
   },
 })`,
         "status": "unanalyzed"
       },
       {
-        "name": "traffic-light.form",
-        "content": `import { TrafficLight, pedestrianRequest, emergencySignal, resumeNormal, pedestrianQueued$ } from './traffic-light.js'
-import { map } from 'rxjs'
+        "name": "traffic.ts",
+        "content": `import { define } from '@yaw-rx/ystate'
+import { timer, filter, delay, take } from 'rxjs'
+import { Pedestrian, emergencySignal, resumeNormal } from './pedestrian.js'
 
-export { pedestrianRequest, emergencySignal, resumeNormal }
+// ---------------------------------------------------------------------------
+// Traffic light: direction lives entirely in which node the machine
+// occupies. 'allRed' is split into 'allRedThenNs' / 'allRedThenEw', and
+// 'emergencyFlashThenNs' / 'ThenEw' carry the same direction through an
+// emergency override, so 'resume' restores it structurally.
+//
+// pedStartNs and nsGo are two edges racing out of the same node
+// (allRedThenNs) - whichever $ emits first wins the transition and the
+// loser's subscription is torn down. That race is the entire pedestrian
+// gate.
+//
+// pedestrianTimer's $ reads deps.pedestrian.state$: this machine observing
+// another independently meaningful machine's own validated output, the
+// same shape payment.ts uses to read deps.auth.state$.
+// ---------------------------------------------------------------------------
+export const TrafficLight = define({
+  nodes: {
+    allRedThenNs: {},
+    allRedThenEw: {},
+    nsGreen: {},
+    nsYellow: {},
+    ewGreen: {},
+    ewYellow: {},
+    pedestrianWalkThenNs: {},
+    pedestrianWalkThenEw: {},
+    pedestrianClearThenNs: {},
+    pedestrianClearThenEw: {},
+    emergencyFlashThenNs: {},
+    emergencyFlashThenEw: {},
+  },
+  deps: {
+    pedestrian: Pedestrian,
+  },
+  edges: {
+    // --- Normal vehicle cycle ------------------------------------------
+    nsGo:      { from: 'allRedThenNs', to: 'nsGreen',  on: 'nsCycleTimer.next' },
+    nsCaution: { from: 'nsGreen',      to: 'nsYellow', on: 'nsTimer.next' },
+    nsStop:    { from: 'nsYellow',     to: 'allRedThenEw', on: 'nsYellowTimer.next' },
 
-const light = TrafficLight.close().start('allRed')
-export { light }
+    ewGo:      { from: 'allRedThenEw', to: 'ewGreen',  on: 'ewCycleTimer.next' },
+    ewCaution: { from: 'ewGreen',      to: 'ewYellow', on: 'ewTimer.next' },
+    ewStop:    { from: 'ewYellow',     to: 'allRedThenNs', on: 'ewYellowTimer.next' },
+
+    // --- Pedestrian phase: forked so the pending direction survives the
+    // interruption and resumes correctly once the crossing clears.
+    pedStartNs:     { from: 'allRedThenNs',          to: 'pedestrianWalkThenNs',  on: 'pedestrianTimer.next' },
+    pedStartEw:     { from: 'allRedThenEw',          to: 'pedestrianWalkThenEw',  on: 'pedestrianTimer.next' },
+    pedWalkDoneNs:  { from: 'pedestrianWalkThenNs',  to: 'pedestrianClearThenNs', on: 'walkTimer.next' },
+    pedWalkDoneEw:  { from: 'pedestrianWalkThenEw',  to: 'pedestrianClearThenEw', on: 'walkTimer.next' },
+    pedClearDoneNs: { from: 'pedestrianClearThenNs', to: 'allRedThenNs',          on: 'clearTimer.next' },
+    pedClearDoneEw: { from: 'pedestrianClearThenEw', to: 'allRedThenEw',          on: 'clearTimer.next' },
+
+    // --- Emergency overrides from every normal state. Each lands in the
+    // ThenNs/ThenEw variant that matches what was already pending.
+    emergencyAllRedNs:   { from: 'allRedThenNs',          to: 'emergencyFlashThenNs', on: 'emergency.next' },
+    emergencyAllRedEw:   { from: 'allRedThenEw',          to: 'emergencyFlashThenEw', on: 'emergency.next' },
+    emergencyNsGreen:    { from: 'nsGreen',               to: 'emergencyFlashThenEw', on: 'emergency.next' },
+    emergencyNsYellow:   { from: 'nsYellow',              to: 'emergencyFlashThenEw', on: 'emergency.next' },
+    emergencyEwGreen:    { from: 'ewGreen',               to: 'emergencyFlashThenNs', on: 'emergency.next' },
+    emergencyEwYellow:   { from: 'ewYellow',              to: 'emergencyFlashThenNs', on: 'emergency.next' },
+    emergencyPedWalkNs:  { from: 'pedestrianWalkThenNs',  to: 'emergencyFlashThenNs', on: 'emergency.next' },
+    emergencyPedWalkEw:  { from: 'pedestrianWalkThenEw',  to: 'emergencyFlashThenEw', on: 'emergency.next' },
+    emergencyPedClearNs: { from: 'pedestrianClearThenNs', to: 'emergencyFlashThenNs', on: 'emergency.next' },
+    emergencyPedClearEw: { from: 'pedestrianClearThenEw', to: 'emergencyFlashThenEw', on: 'emergency.next' },
+    resumeNs: { from: 'emergencyFlashThenNs', to: 'allRedThenNs', on: 'resume.next' },
+    resumeEw: { from: 'emergencyFlashThenEw', to: 'allRedThenEw', on: 'resume.next' },
+  },
+}).implement({
+  nsCycleTimer:  { $: () => timer(1000), next: () => ({}) },
+  ewCycleTimer:  { $: () => timer(1000), next: () => ({}) },
+  nsTimer:       { $: () => timer(4000), next: () => ({}) },
+  ewTimer:       { $: () => timer(4000), next: () => ({}) },
+  nsYellowTimer: { $: () => timer(2000), next: () => ({}) },
+  ewYellowTimer: { $: () => timer(2000), next: () => ({}) },
+  // Races against nsCycleTimer/ewCycleTimer from the same source node -
+  // that race is the entire gate.
+  pedestrianTimer: {
+    $: (deps) => deps.pedestrian.state$.pipe(
+      filter(s => s.node === 'requested'),
+      delay(400),
+      take(1),
+    ),
+    next: () => ({}),
+  },
+  walkTimer:  { $: () => timer(8000), next: () => ({}) },
+  clearTimer: { $: () => timer(2000), next: () => ({}) },
+  emergency:  { $: () => emergencySignal, next: () => ({}) },
+  resume:     { $: () => resumeNormal,    next: () => ({}) },
+})`,
+        "status": "unanalyzed"
+      },
+      {
+        "name": "traffic-system.form",
+        "content": `import { TrafficLight } from './traffic.js'
+import { Pedestrian, pedestrianButton, walkSignal, clearSignal, emergencySignal, resumeNormal } from './pedestrian.js'
+import { filter, map } from 'rxjs'
+
+export { pedestrianButton, emergencySignal, resumeNormal }
+
+// Pedestrian is a disjoint dep of TrafficLight, observed via
+// deps.pedestrian.state$ inside pedestrianTimer's $, so it has to already
+// be running before TrafficLight starts.
+const pedestrian = Pedestrian.close().start('dontWalk')
+const light = TrafficLight.close().start('allRedThenNs', { pedestrian })
+export { pedestrian, light }
+
+// Pulses Pedestrian's own signals off the light's state, from outside
+// both graphs.
+light.state$.pipe(
+  filter(s => s.node === 'pedestrianWalkThenNs' || s.node === 'pedestrianWalkThenEw'),
+).subscribe(() => walkSignal.next())
+
+light.state$.pipe(
+  filter(s => s.node === 'pedestrianClearThenNs' || s.node === 'pedestrianClearThenEw'),
+).subscribe(() => clearSignal.next())
 
 const state$ = light.state$
+const pedState$ = pedestrian.state$
 
 export const stateName$ = state$.pipe(map(s => s.node))
+export const pedStateName$ = pedState$.pipe(map(s => s.node))
 
-// NS lights: red during allRed, ewGreen, ewYellow, pedestrian phases, emergency
-export const nsRedOn$    = state$.pipe(map(s => ['allRed','ewGreen','ewYellow','pedestrianWalk','pedestrianClear','emergencyFlash'].includes(s.node)))
+// NS lights: red whenever it isn't NS's own green/yellow phase.
+export const nsRedOn$    = state$.pipe(map(s => !['nsGreen', 'nsYellow'].includes(s.node)))
 export const nsYellowOn$ = state$.pipe(map(s => s.node === 'nsYellow'))
 export const nsGreenOn$  = state$.pipe(map(s => s.node === 'nsGreen'))
 
-// EW lights: red during allRed, nsGreen, nsYellow, pedestrian phases, emergency
-export const ewRedOn$    = state$.pipe(map(s => ['allRed','nsGreen','nsYellow','pedestrianWalk','pedestrianClear','emergencyFlash'].includes(s.node)))
+// EW lights: red whenever it isn't EW's own green/yellow phase.
+export const ewRedOn$    = state$.pipe(map(s => !['ewGreen', 'ewYellow'].includes(s.node)))
 export const ewYellowOn$ = state$.pipe(map(s => s.node === 'ewYellow'))
 export const ewGreenOn$  = state$.pipe(map(s => s.node === 'ewGreen'))
 
-export const walkOn$     = state$.pipe(map(s => s.node === 'pedestrianWalk'))
-export const dontWalkOn$ = state$.pipe(map(s => s.node !== 'pedestrianWalk'))
+// Pedestrian signal - driven by Pedestrian's own state, not the light's.
+export const walkOn$         = pedState$.pipe(map(s => s.node === 'walking'))
+export const dontWalkOn$     = pedState$.pipe(map(s => s.node !== 'walking'))
+export const pedRequestedOn$ = pedState$.pipe(map(s => s.node === 'requested'))
 
-export const pedQueued$  = pedestrianQueued$
-export const emergencyOn$ = state$.pipe(map(s => s.node === 'emergencyFlash'))
+export const emergencyOn$ = state$.pipe(map(s => s.node === 'emergencyFlashThenNs' || s.node === 'emergencyFlashThenEw'))
 
-export const init = () => ({ light })`,
+export const init = () => ({ light, pedestrian })`,
         "status": "unanalyzed",
         "sections": {
           "template": `<div class="intersection">
@@ -521,20 +567,44 @@ export const init = () => ({ light })`,
     </g>
   </svg>
 
+  <!-- Pedestrian call box: one unit, icon and button together. Clicking
+       the button fires pedestrianButton.next() directly. -->
+  <svg viewBox="0 0 120 170" class="ped-diagram">
+    <defs>
+      <filter id="glow-ped-amber"><feGaussianBlur stdDeviation="1.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    </defs>
+    <rect width="120" height="170" fill="#0a0a0a"/>
+
+    <rect x="10" y="10" width="100" height="150" rx="10" fill="#161616" stroke="#444" stroke-width="2"/>
+
+    <rect x="20" y="20" width="80" height="34" rx="4" fill="#111" stroke="#333" stroke-width="1"/>
+    <text x="60" y="41" text-anchor="middle" font-size="14" font-weight="bold" font-family="var(--font-mono)" rx-if="walkOn" fill="#3f3">WALK</text>
+    <text x="60" y="41" text-anchor="middle" font-size="12" font-weight="bold" font-family="var(--font-mono)" rx-if="dontWalkOn" fill="#f33">DON'T WALK</text>
+
+    <circle cx="60" cy="66" r="4" fill="#332200"/>
+    <g rx-if="pedRequestedOn"><circle cx="60" cy="66" r="4" fill="#fc3" filter="url(#glow-ped-amber)"/></g>
+
+    <text x="60" y="84" text-anchor="middle" fill="#888" font-size="8" font-family="var(--font-mono)">PUSH</text>
+
+    <circle cx="60" cy="118" r="22" fill="#2a2a2a" stroke="#777" stroke-width="2" onclick="pedestrianButton.next()" style="cursor:pointer"/>
+    <circle cx="60" cy="118" r="15" fill="#333" stroke="#555" stroke-width="1" pointer-events="none"/>
+  </svg>
+
   <div class="status">
-    <p>State: <span class="badge">{{stateName}}</span></p>
-    <p class="queued" rx-if="pedQueued">🚶 Pedestrian queued</p>
+    <p>Light: <span class="badge">{{stateName}}</span></p>
+    <p>Pedestrian: <span class="badge">{{pedStateName}}</span></p>
+    <p class="queued" rx-if="pedRequestedOn">🚶 Pedestrian requested</p>
     <p class="emergency" rx-if="emergencyOn">🚨 EMERGENCY OVERRIDE</p>
   </div>
 
   <div class="controls">
-    <button onclick="pedestrianRequest.next()">Request Walk</button>
     <button onclick="emergencySignal.next()">Emergency</button>
     <button onclick="resumeNormal.next()">Resume</button>
   </div>
 </div>`,
           "styles": `.intersection { display: flex; flex-direction: column; gap: 1rem; padding: 1.5rem; font-family: var(--font-mono); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); max-width: 560px; }
 .diagram { width: 100%; height: auto; border-radius: var(--radius-sm); background: #0a0a0a; }
+.ped-diagram { width: 120px; height: auto; border-radius: var(--radius-sm); background: #0a0a0a; margin: -0.6875rem auto 0; display: block; }
 
 .status { display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.85rem; }
 .badge { background: var(--bg-4); padding: 0.2rem 0.5rem; border-radius: var(--radius-sm); font-size: 0.8rem; text-transform: uppercase; }
